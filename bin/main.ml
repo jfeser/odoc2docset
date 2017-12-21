@@ -82,39 +82,83 @@ let main pkg_name =
           |> (fun path -> if anchor = "" then path else path ^ "#" ^ anchor)
         | Error e -> failwith (Url.Error.to_string e)
       in
+
+      let rec name =
+        let open Paths.Identifier in
+        function
+        | Root (_, x)
+        | Page (_, x)
+        | CoreType x
+        | CoreException x -> x
+        | Module (p, x)
+        | ModuleType (p, x)
+        | Type (p, x)
+        | Extension (p, x)
+        | Exception (p, x)
+        | Value (p, x)
+        | Class (p, x)
+        | ClassType (p, x) -> (name p) ^ "." ^ x
+        | Method (p, x)
+        | InstanceVariable (p, x) -> (name p) ^ "#" ^ x
+        | Label _
+        | Constructor _
+        | Argument _
+        | Field _ -> failwith "No printable path."
+      in
       let nop = fun _ _ -> () in
-      let process_module = fun db Types.Module.({ id; }) ->
-        let name = Paths.Identifier.name id in
-        insert db name "Module" (url id)
-      in
-      let process_module_type = nop in
-      let process_type_ext = nop in
-      let process_type = fun db Types.TypeDecl.({ id; }) ->
-        let name = Paths.Identifier.name id in
-        insert db name "Type" (url id)
-      in
-      let process_exception = fun db Types.Exception.({ id; }) ->
-        let name = Paths.Identifier.name id in
-        insert db name "Exception" (url id)
-      in
-      let process_value = fun db Types.Value.({ id; type_ }) ->
-        let name = Paths.Identifier.name id in
+
+      let open Types in
+      let rec process_module = fun db Module.({ id; type_; expansion }) ->
+        let open Module in
+        match type_ with
+        | Alias _ -> ()
+        | ModuleType _ ->
+          insert db (name (Paths.Identifier.any id)) "Module" (url id);
+          begin match expansion with
+            | Some (Signature s)
+            | Some (Functor (_, s)) -> process_signature db s
+            | _ -> ()
+          end
+      and process_module_type = fun db ModuleType.({ id }) ->
+        let open ModuleType in
+        insert db (name (Paths.Identifier.any id)) "Interface" (url id)
+      and process_type_ext = nop
+      and process_type = fun db TypeDecl.({ id; }) ->
+        insert db (name (Paths.Identifier.any id)) "Type" (url id)
+      and process_exception = fun db Exception.({ id; }) ->
+        insert db (name (Paths.Identifier.any id)) "Exception" (url id)
+      and process_value = fun db Value.({ id; type_ }) ->
         let kind = match type_ with
           | Arrow _ -> "Function"
           | Object _ -> "Object"
           | _ -> "Value"
         in
-        insert db name kind (url id)
-      in
-      let process_external = nop in
-      let process_class = fun db Types.Class.({ id; }) ->
-        let name = Paths.Identifier.name id in
-        insert db name "Class" (url id)
-      in
-      let process_class_type = nop in
-      let process_include = nop in
-
-      let process_signature_item =
+        insert db (name (Paths.Identifier.any id)) kind (url id)
+      and process_external = nop
+      and process_method db Method.({ id; private_ }) =
+        if not private_ then
+          insert db (name (Paths.Identifier.any id)) "Method" (url id)
+      and process_instance_variable db InstanceVariable.({ id; }) =
+        insert db (name (Paths.Identifier.any id)) "Variable" (url id)
+      and process_class_signature db ClassSignature.({ items }) =
+        let open ClassSignature in
+        List.iter (function
+            | Method x -> process_method db x
+            | InstanceVariable x -> process_instance_variable db x
+            | _ -> ()) items
+      and process_class = fun db Class.({ id; type_ }) ->
+        let open Class in
+        let open ClassType in
+        let rec process_decl = function
+          | ClassType (Signature x) -> process_class_signature db x
+          | ClassType (Constr _) -> ()
+          | Arrow (_, _, d) -> process_decl d
+        in
+        process_decl type_;
+        insert db (name (Paths.Identifier.any id)) "Class" (url id)
+      and process_class_type = nop
+      and process_include = nop
+      and process_signature_item =
         let open Types.Signature in
         fun db -> function
           | Module x -> process_module db x
@@ -128,19 +172,13 @@ let main pkg_name =
           | ClassType x -> process_class_type db x
           | Include x -> process_include db x
           | Comment x -> ()
-      in
-
-      let process_signature : Sqlite3.db -> 'a Types.Signature.t -> unit =
-        fun db sig_ -> List.iter (process_signature_item db) sig_
-      in
-
-      let process_pack db x = () in
-
-      let process_unit db Types.Unit.({ id; content }) =
+      and process_signature = fun db sig_ ->
+        List.iter (process_signature_item db) sig_
+      and process_pack = nop
+      and process_unit db Types.Unit.({ id; content }) =
         match content with
         | DocOck.Types.Unit.Module x ->
-          let name = Paths.Identifier.name id in
-          insert db name "Module" (url id);
+          insert db (name (Paths.Identifier.any id)) "Module" (url id);
           process_signature db x
         | DocOck.Types.Unit.Pack x -> process_pack db x
       in
