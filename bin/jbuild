@@ -2,4 +2,4 @@
 
 (executable
  ((name main)
-  (libraries (doc-ock doc-ock-html sqlite3 odig bos))))
+  (libraries (doc-ock doc-ock-html sqlite3 odig bos odoc))))
