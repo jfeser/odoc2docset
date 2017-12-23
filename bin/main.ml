@@ -53,27 +53,27 @@ let process_pkg db name unit =
     | Error e -> failwith (Url.Error.to_string e)
   in
 
-  let rec name =
-    let open Paths.Identifier in
+  let module Id = Paths.Identifier in
+  let rec name : 'a Id.any -> string =
     function
-    | Root (_, x)
-    | Page (_, x)
-    | CoreType x
-    | CoreException x -> x
-    | Module (p, x)
-    | ModuleType (p, x)
-    | Type (p, x)
-    | Extension (p, x)
-    | Exception (p, x)
-    | Value (p, x)
-    | Class (p, x)
-    | ClassType (p, x) -> (name p) ^ "." ^ x
-    | Method (p, x)
-    | InstanceVariable (p, x) -> (name p) ^ "#" ^ x
-    | Label _
-    | Constructor _
-    | Argument _
-    | Field _ -> failwith "No printable path."
+    | Id.Root (_, x)
+    | Id.Page (_, x)
+    | Id.CoreType x
+    | Id.CoreException x -> x
+    | Id.Module (p, x)
+    | Id.ModuleType (p, x)
+    | Id.Type (p, x)
+    | Id.Extension (p, x)
+    | Id.Exception (p, x)
+    | Id.Value (p, x)
+    | Id.Class (p, x)
+    | Id.ClassType (p, x) -> (name (Id.any p)) ^ "." ^ x
+    | Id.Method (p, x)
+    | Id.InstanceVariable (p, x) -> (name (Id.any p)) ^ "#" ^ x
+    | Id.Label _
+    | Id.Constructor _
+    | Id.Argument _
+    | Id.Field _ -> failwith "No printable path."
   in
   let nop = fun _ -> () in
 
