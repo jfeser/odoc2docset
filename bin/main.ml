@@ -14,7 +14,7 @@ let read_file cmi =
 let insert db name typ path =
   let query = sprintf "INSERT OR IGNORE INTO searchIndex(name, type, path) VALUES ('%s', '%s', '%s');" name typ path
   in
-  printf "%s\n" query;
+  (* printf "%s\n" query; *)
   ignore (Sqlite3.exec db query)
 
 let ok_exn : ('a, [`Msg of string]) Pervasives.result -> 'a = function
@@ -88,8 +88,7 @@ let process_pkg db name unit =
     in
     let open Module in
     function
-    | Alias p ->
-      printf "Alias %s" (Paths.string_of_sexp (Paths.Path.sexp_of_t (fun _ -> Atom "") p))
+    | Alias _ -> ()
     | ModuleType e -> process_module_type_expr e
   and process_module = fun Module.({ id; type_; expansion; hidden }) ->
     let open Module in
@@ -179,25 +178,28 @@ let process_pkg db name unit =
 
   process_unit unit
 
-let main pkg_name =
+let main output_path pkg_names =
+  (* Create the docset template. *)
+  let docset_dir = Fpath.of_string output_path |> ok_exn in
+  let docset_name = Fpath.(rem_ext docset_dir |> basename) in
+  let res_dir = Fpath.(docset_dir / "Contents" / "Resources") in
+  Bos.OS.Dir.create Fpath.(res_dir / "Documents") |> ok_exn |> ignore;
+  Bos.OS.File.write Fpath.(docset_dir / "Contents" / "Info.plist") (plist docset_name) |> ok_exn;
+
   (* Generate documentation using Odoc. *)
-  (* Sys.command ("odig odoc") |> ignore; *)
+  eprintf "Running odoc..."; flush stderr;
+  let _ =
+    Bos.OS.Cmd.(Bos.Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
+  eprintf " done.\n";
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let doc_dir = Odig.Odoc.htmldir conf None in
 
-  (* Create the docset template. *)
-  let docset_dir = Fpath.v (sprintf "%s.docset" pkg_name) in
-  let res_dir = Fpath.(docset_dir / "Contents" / "Resources") in
-  Bos.OS.Dir.create Fpath.(res_dir / "Documents") |> ok_exn |> ignore;
-  Bos.OS.File.write Fpath.(docset_dir / "Contents" / "Info.plist") (plist pkg_name) |> ok_exn;
-
   (* Copy documentation. *)
-  eprintf "Copying documentation...";
+  eprintf "Copying documentation..."; flush stderr;
   Sys.command (sprintf "cp -r %s/* %s"
                  (Fpath.to_string doc_dir)
                  Fpath.(res_dir / "Documents" |> to_string)) |> ignore;
   eprintf " done.\n";
-  flush stderr;
 
   (* Create index db. *)
   let db_file = Fpath.(res_dir / "docSet.dsidx") in
@@ -219,11 +221,10 @@ let main pkg_name =
   in
 
   (* Populate index. *)
-  pkgs
-  |> Odig.Pkg.Set.iter (fun pkg ->
+  eprintf "Indexing..."; flush stderr;
+  pkgs |> Odig.Pkg.Set.iter (fun pkg ->
       let name = Odig.Pkg.name pkg in
-      eprintf "Processing %s.\n" name;
-      flush stderr;
+      eprintf " %s," name; flush stderr;
 
       insert db name "Package" (sprintf "%s/index.html" name);
 
@@ -236,10 +237,15 @@ let main pkg_name =
               Odoc.Unit.load (Odoc.Fs.File.of_string (Fpath.to_string f))
             in
             let env = Odoc.Env.build builder (`Unit unit) in
-            let resolver = Odoc.Env.resolver env in
             let expander = Odoc.Env.expander env in
-            (* let unit = try DocOck.resolve resolver unit with _ -> unit in *)
             let unit = try DocOck.expand expander unit with _ -> unit in
-            process_pkg db name unit))
+            process_pkg db name unit));
+  eprintf " done.\n"
 
-let () = main "odig"
+let () =
+  if Array.length Sys.argv < 2 then
+    print_endline "Usage: odoc2docset DOCSET PKG..."
+  else
+    main
+      Sys.argv.(1)
+      (Array.sub Sys.argv 2 (Array.length Sys.argv - 2) |> Array.to_list)
