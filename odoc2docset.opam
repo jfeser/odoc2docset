@@ -1,0 +1,21 @@
+opam-version: "1.2"
+name: "odoc2docset"
+version: "1.0"
+maintainer: "Jack Feser <feser@csail.mit.edu>"
+authors: "Jack Feser <feser@csail.mit.edu>"
+license: "MIT"
+homepage: "https://github.com/jfeser/odoc2docset"
+bug-reports: "https://github.com/jfeser/odoc2docset/issues"
+dev-repo: "https://github.com/jfeser/odoc2docset.git"
+build: [  
+  ["jbuilder" "build" "-p" name "-j" jobs]
+]
+depends: [
+  "jbuilder" {build}
+  "bos" {build}
+  "doc-ock" {build}
+  "doc-ock-html" {build}
+  "odig" {build}
+  "odoc" {build}
+  "sqlite3" {build}
+]
