@@ -36,6 +36,8 @@ let plist pkg_name =
 	    <string>%s</string>
 	    <key>isDashDocset</key>
 	    <true/>
+      <key>dashIndexFilePath</key>
+      <string>index.html</string>
       </dict>
       </plist>
     |}
