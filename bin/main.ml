@@ -243,8 +243,8 @@ let main output_path pkg_names =
 
   (* Generate documentation using Odoc. *)
   eprintf "Running odoc..."; flush stderr;
-  (* let _ =
-   *   OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in *)
+  let _ =
+    OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
   eprintf " done.\n";
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let doc_dir = Odig.Odoc.htmldir conf None in
