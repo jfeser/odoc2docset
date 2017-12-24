@@ -38,12 +38,14 @@ let plist pkg_name =
 	    <true/>
       <key>dashIndexFilePath</key>
       <string>index.html</string>
+      <key>DashDocSetFamily</key>
+      <string>dashtoc</string>
       </dict>
       </plist>
     |}
     pkg_name pkg_name pkg_name
 
-let process_pkg db name unit =
+let process_pkg db name unit docu_dir =
   let any = Paths.Identifier.any in
 
   let url id =
@@ -54,6 +56,37 @@ let process_pkg db name unit =
       |> String.concat "/"
       |> (fun path -> if anchor = "" then path else path ^ "#" ^ anchor)
     | Error e -> failwith (Url.Error.to_string e)
+  in
+
+  let add_anchor id type_ name_ =
+    let anchor_elem =
+      Soup.create_element
+        ~attributes:["name", sprintf "//apple_ref/cpp/%s/%s" type_ name_]
+        ~class_:"dashAnchor"
+        "a"
+    in
+    let open DocOckHtml in
+    let file, anchor =
+      match Url.from_identifier ~get_package:(fun _ -> name) ~stop_before:false id with
+      | Ok { page; anchor; kind } ->
+        let file =
+          let html_path =
+            List.rev ("index.html" :: page)
+            |> String.concat "/"
+            |> Fpath.of_string |> ok_exn
+          in
+          Fpath.(docu_dir // html_path)
+        in
+        (file, anchor)
+      | Error e -> failwith (Url.Error.to_string e)
+    in
+    if anchor = "" || not (OS.File.exists file |> ok_exn) then () else
+      let soup = OS.File.read file |> ok_exn |> Soup.parse in
+      begin match Soup.select_one (sprintf {|a[href="#%s"]|} anchor) soup with
+        | Some node -> Soup.prepend_child node anchor_elem
+        | None -> eprintf "Warning: Could not find anchor node for %s in %s.\n" anchor (Fpath.to_string file)
+      end;
+      OS.File.write file (Soup.to_string soup) |> ok_exn
   in
 
   let module Id = Paths.Identifier in
@@ -78,10 +111,14 @@ let process_pkg db name unit =
     | Id.Argument _
     | Id.Field _ -> failwith "No printable path."
   in
-  let nop = fun _ -> () in
+
+  let index id type_ =
+    insert db (name (any id)) type_ (url id);
+    add_anchor id type_ (Paths.Identifier.name id)
+  in
 
   let open Types in
-
+  let nop = fun _ -> () in
   let rec process_module_decl =
     let open ModuleType in
     let rec process_module_type_expr = function
@@ -93,10 +130,10 @@ let process_pkg db name unit =
     function
     | Alias _ -> ()
     | ModuleType e -> process_module_type_expr e
-  and process_module = fun Module.({ id; type_; expansion; hidden }) ->
+  and process_module Module.({ id; type_; expansion; hidden }) =
     let open Module in
     if not hidden then begin
-      insert db (name (any id)) "Module" (url id);
+      index id "Module";
       process_module_decl type_;
       begin match expansion with
         | Some (Signature s)
@@ -104,14 +141,10 @@ let process_pkg db name unit =
         | _ -> ()
       end
     end
-  and process_module_type = fun ModuleType.({ id }) ->
-    let open ModuleType in
-    insert db (name (any id)) "Interface" (url id)
+  and process_module_type ModuleType.({ id }) = index id "Interface"
   and process_type_ext = nop
-  and process_type = fun TypeDecl.({ id; }) ->
-    insert db (name (any id)) "Type" (url id)
-  and process_exception = fun Exception.({ id; }) ->
-    insert db (name (any id)) "Exception" (url id)
+  and process_type TypeDecl.({ id }) = index id "Type"
+  and process_exception Exception.({ id }) = index id "Exception"
   and process_val id type_ =
     let open TypeExpr in
     let kind = match type_ with
@@ -119,35 +152,29 @@ let process_pkg db name unit =
       | Object _ -> "Object"
       | _ -> "Value"
     in
-    insert db (name (any id)) kind (url id)
-  and process_value = fun Value.({ id; type_ }) ->
-    process_val id type_
-  and process_external External.({ id; type_ }) =
-    process_val id type_
+    index id kind
+  and process_value Value.({ id; type_ }) = process_val id type_
+  and process_external External.({ id; type_ }) = process_val id type_
   and process_method Method.({ id; private_ }) =
-    if not private_ then
-      insert db (name (any id)) "Method" (url id)
-  and process_instance_variable InstanceVariable.({ id; }) =
-    insert db (name (any id)) "Variable" (url id)
+    if not private_ then index id "Method"
+  and process_instance_variable InstanceVariable.({ id }) = index id "Variable"
   and process_class_signature ClassSignature.({ items }) =
     let open ClassSignature in
     List.iter (function
         | Method x -> process_method x
         | InstanceVariable x -> process_instance_variable x
         | _ -> ()) items
-  and process_class = fun Class.({ id; type_ }) ->
+  and process_class Class.({ id; type_ }) =
     let open Class in
-    let open ClassType in
     let rec process_decl = function
       | ClassType (Signature x) -> process_class_signature x
       | ClassType (Constr _) -> ()
       | Arrow (_, _, d) -> process_decl d
     in
     process_decl type_;
-    insert db (name (any id)) "Class" (url id)
+    index id "Class"
   and process_class_type = nop
   and process_include Include.({ expansion = { content } }) =
-    let open Include in
     process_signature content
   and process_signature_item =
     let open Signature in
@@ -163,19 +190,13 @@ let process_pkg db name unit =
       | ClassType x -> process_class_type x
       | Include x -> process_include x
       | Comment x -> ()
-  and process_signature sig_ =
-    List.iter process_signature_item sig_
+  and process_signature sig_ = List.iter process_signature_item sig_
   and process_unit Unit.({ id; content }) =
-    let open Unit in
     let process_packed items =
-      let open Packed in
-      List.iter (fun { id; path } ->
-          insert db (name (any id)) "Module" (url id)) items
+      List.iter (fun Unit.Packed.({ id; path }) -> index id "Module") items
     in
     match content with
-    | Module x ->
-      insert db (name (any id)) "Module" (url id);
-      process_signature x
+    | Module x -> index id "Module"; process_signature x
     | Pack x -> process_packed x
   in
 
@@ -186,24 +207,25 @@ let main output_path pkg_names =
   let docset_dir = Fpath.of_string output_path |> ok_exn in
   let docset_name = Fpath.(rem_ext docset_dir |> basename) in
   let res_dir = Fpath.(docset_dir / "Contents" / "Resources") in
-  OS.Dir.create Fpath.(res_dir / "Documents") |> ok_exn |> ignore;
+  let docu_dir = Fpath.(res_dir / "Documents") in
+  OS.Dir.create docu_dir |> ok_exn |> ignore;
   OS.File.write Fpath.(docset_dir / "Contents" / "Info.plist") (plist docset_name) |> ok_exn;
   let etc_dir = Fpath.of_string Opam_config.etc |> ok_exn in
   OS.Cmd.(Cmd.(v "cp" % Fpath.(etc_dir / "icon.png" |> to_string) % Fpath.(docset_dir / "icon.png" |> to_string)) |> run_status ~quiet:true) |> ok_exn |> ignore;
 
   (* Generate documentation using Odoc. *)
-  eprintf "Running odoc..."; flush stderr;
-  let _ =
-    OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
-  eprintf " done.\n";
+  (* eprintf "Running odoc..."; flush stderr;
+   * let _ =
+   *   OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
+   * eprintf " done.\n"; *)
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let doc_dir = Odig.Odoc.htmldir conf None in
 
   (* Copy documentation. *)
   eprintf "Copying documentation..."; flush stderr;
   Sys.command (sprintf "cp -r %s/* %s"
-                 (Fpath.to_string doc_dir)
-                 Fpath.(res_dir / "Documents" |> to_string)) |> ignore;
+                 Fpath.(to_string doc_dir)
+                 Fpath.(docu_dir |> to_string)) |> ignore;
   eprintf " done.\n";
 
   (* Create index db. *)
@@ -244,7 +266,7 @@ let main output_path pkg_names =
             let env = Odoc.Env.build builder (`Unit unit) in
             let expander = Odoc.Env.expander env in
             let unit = try DocOck.expand expander unit with _ -> unit in
-            process_pkg db name unit));
+            process_pkg db name unit docu_dir));
   eprintf " done.\n"
 
 let () =
