@@ -1,5 +1,10 @@
 (jbuild_version 1)
 
+(rule
+ ((targets (opam_config.ml))
+  (deps    (config))
+  (action  (run ${OCAML} ${<} ${@} etc))))
+
 (executable
  ((name main)
   (public_name odoc2docset)

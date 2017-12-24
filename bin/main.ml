@@ -1,5 +1,6 @@
 open Printf
 
+open Bos
 open DocOck
 
 let read_file cmi =
@@ -183,13 +184,15 @@ let main output_path pkg_names =
   let docset_dir = Fpath.of_string output_path |> ok_exn in
   let docset_name = Fpath.(rem_ext docset_dir |> basename) in
   let res_dir = Fpath.(docset_dir / "Contents" / "Resources") in
-  Bos.OS.Dir.create Fpath.(res_dir / "Documents") |> ok_exn |> ignore;
-  Bos.OS.File.write Fpath.(docset_dir / "Contents" / "Info.plist") (plist docset_name) |> ok_exn;
+  OS.Dir.create Fpath.(res_dir / "Documents") |> ok_exn |> ignore;
+  OS.File.write Fpath.(docset_dir / "Contents" / "Info.plist") (plist docset_name) |> ok_exn;
+  let etc_dir = Fpath.of_string Opam_config.etc |> ok_exn in
+  OS.Cmd.(Cmd.(v "cp" % Fpath.(etc_dir / "icon.png" |> to_string) % Fpath.(docset_dir / "icon.png" |> to_string)) |> run_status ~quiet:true) |> ok_exn |> ignore;
 
   (* Generate documentation using Odoc. *)
   eprintf "Running odoc..."; flush stderr;
   let _ =
-    Bos.OS.Cmd.(Bos.Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
+    OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
   eprintf " done.\n";
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let doc_dir = Odig.Odoc.htmldir conf None in
@@ -203,7 +206,7 @@ let main output_path pkg_names =
 
   (* Create index db. *)
   let db_file = Fpath.(res_dir / "docSet.dsidx") in
-  Bos.OS.Path.delete db_file |> ok_exn;
+  OS.Path.delete db_file |> ok_exn;
   let db = Sqlite3.db_open (Fpath.to_string db_file) in
   ignore (Sqlite3.exec db "CREATE TABLE searchIndex(id INTEGER PRIMARY KEY, name TEXT, type TEXT, path TEXT);");
   ignore (Sqlite3.exec db "CREATE UNIQUE INDEX anchor ON searchIndex (name, type, path);");
@@ -229,7 +232,7 @@ let main output_path pkg_names =
       insert db name "Package" (sprintf "%s/index.html" name);
 
       let cachedir = Odig.Pkg.cachedir pkg in
-      Bos.OS.Dir.contents cachedir
+      OS.Dir.contents cachedir
       |> ok_exn
       |> List.iter (fun f ->
           if Fpath.has_ext "odoc" f then
