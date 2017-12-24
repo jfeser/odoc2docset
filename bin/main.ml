@@ -199,7 +199,6 @@ let process_pkg db name unit docu_dir =
     | Module x -> index id "Module"; process_signature x
     | Pack x -> process_packed x
   in
-
   process_unit unit
 
 let main output_path pkg_names =
@@ -214,10 +213,10 @@ let main output_path pkg_names =
   OS.Cmd.(Cmd.(v "cp" % Fpath.(etc_dir / "icon.png" |> to_string) % Fpath.(docset_dir / "icon.png" |> to_string)) |> run_status ~quiet:true) |> ok_exn |> ignore;
 
   (* Generate documentation using Odoc. *)
-  (* eprintf "Running odoc..."; flush stderr;
-   * let _ =
-   *   OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
-   * eprintf " done.\n"; *)
+  eprintf "Running odoc..."; flush stderr;
+  let _ =
+    OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
+  eprintf " done.\n";
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let doc_dir = Odig.Odoc.htmldir conf None in
 
