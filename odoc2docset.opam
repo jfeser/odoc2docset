@@ -12,11 +12,12 @@ build: [
   ["jbuilder" "build" "-p" name "-j" jobs]
 ]
 depends: [
-  "jbuilder" {build}
-  "bos" {build}
-  "doc-ock" {build}
-  "doc-ock-html" {build}
-  "odig" {build}
-  "odoc" {build}
-  "sqlite3" {build}
+  "jbuilder"     {build}
+  "bos"          {>= "0.1.6"}
+  "doc-ock"      {>= "1.2.0"}
+  "doc-ock-html" {>= "1.2.0"}
+  "odig"         {>= "0.0.3"}
+  "odoc"         {>= "1.2.0"}
+  "sqlite3"      {>= "4.3.2"}
+  "lambdasoup"   {>= "0.6.1"}
 ]
