@@ -116,13 +116,14 @@ let ids_of_unit : 'a Types.Unit.t -> ('a Paths.Identifier.any * string) list =
       | Include x -> process_include x
       | Comment x -> ()
     and process_signature sig_ = List.iter process_signature_item sig_
-    and process_unit Unit.({ id; content }) =
+    and process_unit Unit.({ id; content; hidden }) =
       let process_packed items =
         List.iter (fun Unit.Packed.({ id; path }) -> index id "Module") items
       in
-      match content with
-      | Module x -> index id "Module"; process_signature x
-      | Pack x -> process_packed x
+      if not hidden then
+        match content with
+        | Module x -> index id "Module"; process_signature x
+        | Pack x -> process_packed x
     in
     process_unit unit; !output
 
@@ -242,8 +243,8 @@ let main output_path pkg_names =
 
   (* Generate documentation using Odoc. *)
   eprintf "Running odoc..."; flush stderr;
-  let _ =
-    OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in
+  (* let _ =
+   *   OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true) |> ok_exn in *)
   eprintf " done.\n";
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let doc_dir = Odig.Odoc.htmldir conf None in

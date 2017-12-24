@@ -22,3 +22,9 @@ To generate documentation for a subset of packages, run:
 ```
 odoc2docset Opam.docset pkgA pkgB pkgC
 ```
+
+## Known bugs
+
+Running this tool to update an existing docset while Dash is running can fail,
+because the Sqlite database does not support concurrent accesses. If the tool
+crashes with a Sqlite BUSY exception, quit Dash and try again.
