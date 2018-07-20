@@ -226,8 +226,9 @@ let add_anchors :
              match Soup.select_one (sprintf {|a[href="#%s"]|} anchor) soup with
              | Some node -> Soup.prepend_child node anchor_elem
              | None ->
-                 eprintf "Warning: Could not find anchor node for %s in %s.\n"
-                   anchor (Fpath.to_string file) )
+                 Logs.warn (fun m ->
+                     m "Could not find anchor node for %s in %s." anchor
+                       (Fpath.to_string file) ) )
            anchors ;
          OS.File.write file (Soup.to_string soup) |> ok_exn )
 
@@ -251,25 +252,23 @@ let main output_path pkg_names =
     |> run_status ~quiet:true)
   |> ok_exn |> ignore ;
   (* Generate documentation using Odoc. *)
-  eprintf "Running odoc..." ;
-  flush stderr ;
+  Logs.info (fun m -> m "Running odoc.") ;
   let _ =
     OS.Cmd.(
       Cmd.(v "odig" % "odoc" %% of_list pkg_names) |> run_status ~quiet:true)
     |> ok_exn
   in
-  eprintf " done.\n" ;
+  Logs.info (fun m -> m "Done running odoc.") ;
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let doc_dir = Odig.Odoc.htmldir conf None in
   (* Copy documentation. *)
-  eprintf "Copying documentation..." ;
-  flush stderr ;
+  Logs.info (fun m -> m "Copying documentation.") ;
   Sys.command
     (sprintf "cp -r %s/* %s"
        Fpath.(to_string doc_dir)
        Fpath.(docu_dir |> to_string))
   |> ignore ;
-  eprintf " done.\n" ;
+  Logs.info (fun m -> m "Done copying documentation.") ;
   (* Create index db. *)
   let db_file = Fpath.(res_dir / "docSet.dsidx") in
   OS.Path.delete db_file |> ok_exn ;
@@ -293,13 +292,11 @@ let main output_path pkg_names =
     Odoc.Env.create ~important_digests:true ~directories:include_dirs
   in
   (* Populate index. *)
-  eprintf "Indexing..." ;
-  flush stderr ;
+  Logs.info (fun m -> m "Creating index.") ;
   pkgs
   |> Odig.Pkg.Set.iter (fun pkg ->
          let name = Odig.Pkg.name pkg in
-         eprintf " %s," name ;
-         flush stderr ;
+         Logs.info (fun m -> m "Indexing %s." name) ;
          insert db name "Package" (sprintf "%s/index.html" name) ;
          let cachedir = Odig.Pkg.cachedir pkg in
          OS.Dir.contents cachedir |> ok_exn
@@ -316,9 +313,10 @@ let main output_path pkg_names =
                   let ids = ids_of_unit unit in
                   update_index ~pkg:name db ids ;
                   add_anchors ~pkg:name docu_dir ids ) ) ) ;
-  eprintf " done.\n"
+  Logs.info (fun m -> m "Done creating index.")
 
 let () =
+  Logs.set_reporter (Logs.format_reporter ()) ;
   if Array.length Sys.argv < 2 then
     print_endline "Usage: odoc2docset DOCSET PKG..."
   else
