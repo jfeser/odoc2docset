@@ -8,4 +8,5 @@
 (executable
  ((name main)
   (public_name odoc2docset)
-  (libraries (doc-ock doc-ock-html sqlite3 odig bos odoc lambdasoup logs))))
+   
+  (libraries (sqlite3 odig bos odoc lambdasoup logs base stdio))))
