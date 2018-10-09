@@ -164,13 +164,13 @@ let update_index =
   in
   let url id =
     let open Html in
-    match Url.from_identifier ~stop_before:false id with
+    match Html__Url.from_identifier ~stop_before:false id with
     | Ok {page; anchor; _} ->
         List.rev ("index.html" :: page)
         |> String.concat ~sep:"/"
         |> fun path ->
         if String.(anchor = "") then path else path ^ "#" ^ anchor
-    | Error e -> failwith (Url.Error.to_string e)
+    | Error e -> failwith (Html__Url.Error.to_string e)
   in
   fun db (ids: (Model.Paths.Identifier.any * _) list) ->
     let open Sqlite3 in
@@ -194,11 +194,11 @@ let add_anchors docu_dir ids =
   List.fold_left
     ~f:(fun m (id, type_) ->
       let open Html in
-      let url = Url.from_identifier ~stop_before:false id in
-      let Url.({page; anchor; _}) =
+      let url = Html__Url.from_identifier ~stop_before:false id in
+      let Html__Url.({page; anchor; _}) =
         match url with
         | Ok x -> x
-        | Error e -> failwith (Url.Error.to_string e)
+        | Error e -> failwith (Html__Url.Error.to_string e)
       in
       let file =
         let html_path =
