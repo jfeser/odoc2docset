@@ -66,6 +66,7 @@ let ids_of_unit unit =
       process_module_decl module_type ;
       match expansion with
       | Some (Signature s) | Some (Functor (_, s)) -> process_signature s
+      | Some AlreadyASig -> ()
       | None -> () )
   and process_module_type ModuleType.({id; _}) = index id "Interface"
   and process_type_ext = nop
