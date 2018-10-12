@@ -66,7 +66,7 @@ let ids_of_unit unit =
       process_module_decl module_type ;
       match expansion with
       | Some (Signature s) | Some (Functor (_, s)) -> process_signature s
-      | None -> () )
+      | None | Some AlreadyASig -> () )
   and process_module_type ModuleType.({id; _}) = index id "Interface"
   and process_type_ext = nop
   and process_type TypeDecl.({id; _}) = index id "Type"
@@ -171,7 +171,7 @@ let update_index =
         if String.(anchor = "") then path else path ^ "#" ^ anchor
     | Error e -> failwith (Url.Error.to_string e)
   in
-  fun db (ids: (Model.Paths.Identifier.any * _) list) ->
+  fun db (ids : (Model.Paths.Identifier.any * _) list) ->
     let open Sqlite3 in
     let stmt =
       prepare db
