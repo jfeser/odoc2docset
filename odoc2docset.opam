@@ -9,13 +9,11 @@ bug-reports: "https://github.com/jfeser/odoc2docset/issues"
 dev-repo: "https://github.com/jfeser/odoc2docset.git"
 build: [
   ["ocaml" "bin/config" "bin/config.ml" odoc2docset:etc]
-  ["jbuilder" "build" "-p" name "-j" jobs]
+  ["dune" "build" "-p" name "-j" jobs]
 ]
 depends: [
-  "jbuilder"     {build}
+  "dune"         {build}
   "bos"          {>= "0.1.6"}
-  "doc-ock"      {>= "1.2.0"}
-  "doc-ock-html" {>= "1.2.0"}
   "odig"         {>= "0.0.3"}
   "odoc"         {>= "1.2.0"}
   "sqlite3"      {>= "4.3.2"}
