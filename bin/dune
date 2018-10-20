@@ -1,0 +1,9 @@
+(rule
+ (targets opam_config.ml)
+ (deps    (:config config))
+ (action  (run %{ocaml} %{config} %{targets} etc)))
+
+(executable
+ (name main)
+ (public_name odoc2docset)
+ (libraries sqlite3 odig bos odoc lambdasoup logs base stdio))
