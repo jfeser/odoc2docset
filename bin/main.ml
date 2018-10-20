@@ -1,6 +1,7 @@
 open Base
 open Printf
 open Bos
+open Cmdliner
 
 let insert db name typ path =
   let query =
@@ -364,21 +365,21 @@ let populate_db include_dirs pkgs db docu_dir =
                | Error err ->
                    Logs.err (fun m -> m "%s" (Error.to_string_hum err)) ) )
 
-let main output_path pkg_names =
+let main () output_path pkg_names =
   (* Get Odig configuration. *)
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let all_pkgs = Odig.Pkg.set conf |> ok_exn |> Odig.Pkg.Set.to_list in
   (* Look up all the selected packages. *)
   let pkgs =
     match pkg_names with
-    | Some names ->
+    | [] -> all_pkgs
+    | names ->
         List.filter_map names ~f:(fun n ->
             match Odig.Pkg.find conf n with
             | Some pkg -> Some pkg
             | None ->
                 Logs.err (fun m -> m "Could not find package %s." n) ;
                 None )
-    | None -> all_pkgs
   in
   let include_dirs =
     List.concat_map all_pkgs ~f:(fun pkg ->
@@ -416,16 +417,43 @@ let main output_path pkg_names =
   populate_db include_dirs pkgs db docu_dir ;
   Logs.info (fun m -> m "Done creating index.")
 
-let () =
-  Logs.set_reporter (Logs.format_reporter ()) ;
-  Logs.set_level (Some Logs.Debug) ;
-  if Array.length Sys.argv < 2 then
-    Stdio.print_endline "Usage: odoc2docset DOCSET PKG..."
-  else
-    let docset_dir = Sys.argv.(1) in
-    let pkgs =
-      Array.sub Sys.argv ~pos:2 ~len:(Array.length Sys.argv - 2)
-      |> Array.to_list
+let setup_log style_renderer level =
+  Fmt_tty.setup_std_outputs ?style_renderer () ;
+  Logs.set_level level ;
+  Logs.set_reporter (Logs_fmt.reporter ()) ;
+  ()
+
+let cmd =
+  let setup_log =
+    Term.(const setup_log $ Fmt_cli.style_renderer () $ Logs_cli.level ())
+  in
+  let docset_dir =
+    let doc =
+      "Destination of the docset. If the docset already exists, it will be \
+       overwritten."
     in
-    let pkgs = if List.is_empty pkgs then None else Some pkgs in
-    main docset_dir pkgs
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"DOCSET" ~doc)
+  in
+  let pkgs =
+    let doc =
+      "Packages to include in the docset. If no packages are specified, then \
+       all the installed packages will be used."
+    in
+    Arg.(value & pos_right 0 string [] & info [] ~docv:"PKG" ~doc)
+  in
+  (Term.(const main $ setup_log $ docset_dir $ pkgs), Term.info "odoc2docset")
+
+let () = Term.(exit @@ eval cmd)
+
+(* let () =
+ *   Logs.set_reporter (Logs.format_reporter ()) ;
+ *   Logs.set_level (Some Logs.Debug) ;
+ *   if Array.length Sys.argv < 2 then
+ *     Stdio.print_endline "Usage: odoc2docset DOCSET PKG..."
+ *   else
+ *     let docset_dir = Sys.argv.(1) in
+ *     let pkgs =
+ *       Array.sub Sys.argv ~pos:2 ~len:(Array.length Sys.argv - 2)
+ *       |> Array.to_list
+ *     in
+ *     main docset_dir pkgs *)
