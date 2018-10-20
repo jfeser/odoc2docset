@@ -41,12 +41,39 @@ let plist pkg_name =
     |}
     pkg_name pkg_name pkg_name
 
+let rec id_to_string =
+  let module Id = Model.Paths.Identifier in
+  function
+  | Id.Root (_, x) | Id.Page (_, x) | Id.CoreType x | Id.CoreException x -> x
+  | Id.Module (p, x)
+   |Id.ModuleType (p, x)
+   |Id.Type (p, x)
+   |Id.Extension (p, x)
+   |Id.Exception (p, x)
+   |Id.Value (p, x)
+   |Id.Class (p, x)
+   |Id.ClassType (p, x) ->
+      id_to_string (Id.any p) ^ "." ^ x
+  | Id.Method (p, x) | Id.InstanceVariable (p, x) ->
+      id_to_string (Id.any p) ^ "#" ^ x
+  | Id.Label _ | Id.Constructor _ | Id.Argument _ | Id.Field _ ->
+      failwith "No printable path."
+
+let path_to_string (p : Model.Paths.Path.module_) =
+  let module Path = Model.Paths.Path in
+  match p with
+  | Path.Resolved p ->
+      Path.Resolved.identifier p |> Model.Paths.Identifier.any |> id_to_string
+  | _ -> "<unknown>"
+
 (** Collect the identifiers (labeled with Dash types) in a compilation unit. *)
 let ids_of_unit unit =
   let open Model.Lang in
   let output = ref [] in
   let index id type_ =
-    output := (Model.Paths.Identifier.any id, type_) :: !output
+    let id = Model.Paths.Identifier.any id in
+    Logs.debug (fun m -> m "Inserting %s : %s." (id_to_string id) type_) ;
+    output := (id, type_) :: !output
   in
   let nop _ = () in
   let rec process_module_decl =
@@ -58,15 +85,27 @@ let ids_of_unit unit =
     in
     let open Module in
     function Alias _ -> () | ModuleType e -> process_module_type_expr e
-  and process_module Module.({id; type_; expansion; hidden; display_type; _}) =
+  and process_module
+      Module.({id; type_; expansion; hidden; display_type; canonical; _}) =
     let open Module in
+    Logs.debug (fun m ->
+        let canon_str =
+          Option.map canonical ~f:(fun (path, _) -> path_to_string path)
+          |> Option.value ~default:"none"
+        in
+        m "Module %s hidden=%b canonical=%s"
+          (id_to_string (Model.Paths.Identifier.any id))
+          hidden canon_str ) ;
     if not hidden then (
       index id "Module" ;
       let module_type = Option.value ~default:type_ display_type in
       process_module_decl module_type ;
       match expansion with
       | Some (Signature s) | Some (Functor (_, s)) -> process_signature s
-      | None | Some AlreadyASig -> () )
+      | None | Some AlreadyASig ->
+          Logs.debug (fun m ->
+              m "Module %s no expansion."
+                (id_to_string (Model.Paths.Identifier.any id)) ) )
   and process_module_type ModuleType.({id; _}) = index id "Interface"
   and process_type_ext = nop
   and process_type TypeDecl.({id; _}) = index id "Type"
@@ -126,6 +165,10 @@ let ids_of_unit unit =
         ~f:(fun Compilation_unit.Packed.({id; _}) -> index id "Module")
         items
     in
+    Logs.debug (fun m ->
+        m "Unit %s hidden=%b"
+          (id_to_string (Model.Paths.Identifier.any id))
+          hidden ) ;
     if not hidden then
       match content with
       | Module x -> index id "Module" ; process_signature x
@@ -143,23 +186,6 @@ let update_index =
     let open Sqlite3.Rc in
     function
     | DONE -> () | e -> failwith (sprintf "Sqlite error: %s" (to_string e))
-  in
-  let module Id = Model.Paths.Identifier in
-  let rec name = function
-    | Id.Root (_, x) | Id.Page (_, x) | Id.CoreType x | Id.CoreException x -> x
-    | Id.Module (p, x)
-     |Id.ModuleType (p, x)
-     |Id.Type (p, x)
-     |Id.Extension (p, x)
-     |Id.Exception (p, x)
-     |Id.Value (p, x)
-     |Id.Class (p, x)
-     |Id.ClassType (p, x) ->
-        name (Id.any p) ^ "." ^ x
-    | Id.Method (p, x) | Id.InstanceVariable (p, x) ->
-        name (Id.any p) ^ "#" ^ x
-    | Id.Label _ | Id.Constructor _ | Id.Argument _ | Id.Field _ ->
-        failwith "No printable path."
   in
   let url id =
     let open Html in
@@ -181,7 +207,7 @@ let update_index =
     List.iter
       ~f:(fun (id, type_) ->
         let open Data in
-        bind stmt 1 (TEXT (name id)) |> ok_exn ;
+        bind stmt 1 (TEXT (id_to_string id)) |> ok_exn ;
         bind stmt 2 (TEXT type_) |> ok_exn ;
         bind stmt 3 (TEXT (url id)) |> ok_exn ;
         step stmt |> done_exn ;
@@ -275,6 +301,21 @@ let depends conf pkg =
              Logs.warn (fun m -> m "Looking up package %s failed: %s" n e) ;
              None )
 
+(** Load a compilation unit, resolve and expand it. Taken straight from
+   odoc/src/html_page.ml. *)
+let load_unit env path =
+  let open Odoc in
+  let unit =
+    Odoc.Compilation_unit.load (Odoc.Fs.File.of_string (Fpath.to_string path))
+  in
+  (* See comment in compile for explanation regarding the env duplication. *)
+  let resolve_env = Env.build env (`Unit unit) in
+  let resolved = Xref.resolve (Env.resolver resolve_env) unit in
+  let expand_env = Env.build env (`Unit resolved) in
+  Xref.expand (Env.expander expand_env) resolved
+  |> Xref.Lookup.lookup
+  |> Xref.resolve (Env.resolver expand_env)
+
 let populate_db include_dirs pkgs db docu_dir =
   let builder =
     Odoc.Env.create ~important_digests:true ~directories:include_dirs
@@ -288,16 +329,7 @@ let populate_db include_dirs pkgs db docu_dir =
       |> List.iter ~f:(fun f ->
              Logs.debug (fun m -> m "Loading %s." (Fpath.to_string f)) ;
              if Fpath.has_ext "odoc" f then (
-               let unit =
-                 Odoc.Compilation_unit.load
-                   (Odoc.Fs.File.of_string (Fpath.to_string f))
-               in
-               let env = Odoc.Env.build builder (`Unit unit) in
-               let expander = Odoc.Env.expander env in
-               let unit =
-                 try Xref.expand expander unit with
-                 | Not_found_s _ | Caml.Not_found -> unit
-               in
+               let unit = load_unit builder f in
                let ids = ids_of_unit unit in
                update_index db ids ; add_anchors docu_dir ids ) ) )
 
