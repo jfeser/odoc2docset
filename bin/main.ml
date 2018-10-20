@@ -56,8 +56,18 @@ let rec id_to_string =
       id_to_string (Id.any p) ^ "." ^ x
   | Id.Method (p, x) | Id.InstanceVariable (p, x) ->
       id_to_string (Id.any p) ^ "#" ^ x
-  | Id.Label _ | Id.Constructor _ | Id.Argument _ | Id.Field _ ->
-      failwith "No printable path."
+  | Id.Constructor (p, x) -> (
+    match p with
+    | Id.Type (p, _) -> id_to_string (Id.any p) ^ "." ^ x
+    | Id.CoreType _ -> x )
+  | Id.Field (p, x) -> (
+    match p with
+    | Id.Root (_, y) | Id.Module (_, y) | Id.ModuleType (_, y) -> y ^ "." ^ x
+    | Id.Argument (_, _, _) -> id_to_string (Id.any p) ^ "." ^ x
+    | Id.Type (p, _) -> id_to_string (Id.any p) ^ "." ^ x
+    | Id.CoreType _ -> x
+    | Id.Class (_, y) | Id.ClassType (_, y) -> y ^ "#" ^ x )
+  | Id.Label _ | Id.Argument _ -> failwith "No printable path."
 
 let path_to_string (p : Model.Paths.Path.module_) =
   let module Path = Model.Paths.Path in
@@ -108,7 +118,18 @@ let ids_of_unit unit =
                 (id_to_string (Model.Paths.Identifier.any id)) ) )
   and process_module_type ModuleType.({id; _}) = index id "Interface"
   and process_type_ext = nop
-  and process_type TypeDecl.({id; _}) = index id "Type"
+  and process_type TypeDecl.({id; representation; _}) =
+    index id "Type" ;
+    match representation with
+    | Some (Variant constrs) -> List.iter constrs ~f:process_constructor
+    | Some (Record fields) -> List.iter fields ~f:process_field
+    | _ -> ()
+  and process_constructor TypeDecl.Constructor.({id; args; _}) =
+    index id "Constructor" ;
+    match args with
+    | Record fields -> List.iter fields ~f:process_field
+    | _ -> ()
+  and process_field TypeDecl.Field.({id; _}) = index id "Field"
   and process_exception Exception.({id; _}) = index id "Exception"
   and process_val id type_ =
     let open TypeExpr in
