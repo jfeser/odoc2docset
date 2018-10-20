@@ -305,16 +305,23 @@ let depends conf pkg =
    odoc/src/html_page.ml. *)
 let load_unit env path =
   let open Odoc in
-  let unit =
-    Odoc.Compilation_unit.load (Odoc.Fs.File.of_string (Fpath.to_string path))
-  in
-  (* See comment in compile for explanation regarding the env duplication. *)
-  let resolve_env = Env.build env (`Unit unit) in
-  let resolved = Xref.resolve (Env.resolver resolve_env) unit in
-  let expand_env = Env.build env (`Unit resolved) in
-  Xref.expand (Env.expander expand_env) resolved
-  |> Xref.Lookup.lookup
-  |> Xref.resolve (Env.resolver expand_env)
+  try
+    let unit =
+      Odoc.Compilation_unit.load
+        (Odoc.Fs.File.of_string (Fpath.to_string path))
+    in
+    (* See comment in compile for explanation regarding the env duplication. *)
+    let resolve_env = Env.build env (`Unit unit) in
+    let resolved = Xref.resolve (Env.resolver resolve_env) unit in
+    let expand_env = Env.build env (`Unit resolved) in
+    Xref.expand (Env.expander expand_env) resolved
+    |> Xref.Lookup.lookup
+    |> Xref.resolve (Env.resolver expand_env)
+    |> Or_error.return
+  with Caml.Not_found ->
+    Error
+      (Error.create "Failed to resolve." (Fpath.to_string path)
+         String.sexp_of_t)
 
 let populate_db include_dirs pkgs db docu_dir =
   let builder =
@@ -328,10 +335,13 @@ let populate_db include_dirs pkgs db docu_dir =
       OS.Dir.contents cachedir |> ok_exn
       |> List.iter ~f:(fun f ->
              Logs.debug (fun m -> m "Loading %s." (Fpath.to_string f)) ;
-             if Fpath.has_ext "odoc" f then (
-               let unit = load_unit builder f in
-               let ids = ids_of_unit unit in
-               update_index db ids ; add_anchors docu_dir ids ) ) )
+             if Fpath.has_ext "odoc" f then
+               match load_unit builder f with
+               | Ok unit ->
+                   let ids = ids_of_unit unit in
+                   update_index db ids ; add_anchors docu_dir ids
+               | Error err ->
+                   Logs.err (fun m -> m "%s" (Error.to_string_hum err)) ) )
 
 let main output_path pkg_names =
   (* Get Odig configuration. *)
