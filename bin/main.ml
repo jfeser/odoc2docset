@@ -326,25 +326,27 @@ let main output_path pkg_names =
   let docu_dir, db_file = create_template output_path in
   (* Generate documentation using Odoc. *)
   Logs.info (fun m -> m "Running odoc.") ;
-  let _ =
-    let names = List.map pkgs ~f:Odig.Pkg.name in
-    OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list names) |> run_status ~quiet:true)
-    |> ok_exn
-  in
+  let names = List.map pkgs ~f:Odig.Pkg.name in
+  OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list names) |> run_status ~quiet:true)
+  |> ok_exn |> ignore ;
   Logs.info (fun m -> m "Done running odoc.") ;
   (* Copy documentation. *)
   Logs.info (fun m -> m "Copying documentation.") ;
+  let cp = Cmd.v "cp" in
   List.iter pkgs ~f:(fun pkg ->
       Logs.debug (fun m -> m "Copying %s." (Odig.Pkg.name pkg)) ;
       let doc_dir = Odig.Odoc.htmldir conf (Some pkg) in
-      Caml.Sys.command
-        (sprintf "cp -r %s %s"
-           Fpath.(to_string doc_dir)
-           Fpath.(docu_dir |> to_string))
-      |> ignore ) ;
-  Caml.Sys.command
-    (sprintf "cp ~/.opam/default/odoc/* %s" Fpath.(docu_dir |> to_string))
-  |> ignore ;
+      let cmd = Cmd.(cp % "-r" % p doc_dir % p docu_dir) in
+      OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore ) ;
+  (* Copy theme CSS & JS. *)
+  let theme_dir = "~/.opam/default/share/odoc/odoc-theme/default/" in
+  let cmd =
+    Cmd.(
+      cp
+      % (theme_dir ^ "highlight.pack.js")
+      % (theme_dir ^ "odoc.css") % p docu_dir)
+  in
+  OS.Cmd.run_status ~quiet:true cmd |> ignore ;
   Logs.info (fun m -> m "Done copying documentation.") ;
   Logs.info (fun m -> m "Creating index.") ;
   let db = create_db db_file in
