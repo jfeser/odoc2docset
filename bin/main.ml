@@ -7,6 +7,24 @@ module Model = Odoc__model
 module Html = Odoc__html
 module Xref = Odoc__xref
 
+module Sqlite3 = struct
+  module Rc = struct
+    include Sqlite3.Rc
+
+    let ok_exn =
+      let open Sqlite3.Rc in
+      function
+      | OK -> () | e -> failwith (sprintf "Sqlite error: %s" (to_string e))
+
+    let done_exn =
+      let open Sqlite3.Rc in
+      function
+      | DONE -> () | e -> failwith (sprintf "Sqlite error: %s" (to_string e))
+  end
+
+  include (Sqlite3 : module type of Sqlite3 with module Rc := Rc)
+end
+
 let insert db name typ path =
   let query =
     sprintf
@@ -14,7 +32,6 @@ let insert db name typ path =
        '%s', '%s');"
       name typ path
   in
-  (* printf "%s\n" query; *)
   ignore (Sqlite3.exec db query)
 
 let ok_exn : ('a, [`Msg of string]) Caml.Pervasives.result -> 'a = function
@@ -202,88 +219,70 @@ let ids_of_unit unit =
   in
   process_unit unit ; !output
 
-let update_index =
-  let ok_exn =
-    let open Sqlite3.Rc in
-    function
-    | OK -> () | e -> failwith (sprintf "Sqlite error: %s" (to_string e))
-  in
-  let done_exn =
-    let open Sqlite3.Rc in
-    function
-    | DONE -> () | e -> failwith (sprintf "Sqlite error: %s" (to_string e))
-  in
-  let url id =
-    let open Html in
-    match Url.from_identifier ~stop_before:false id with
-    | Ok {page; anchor; _} ->
-        List.rev ("index.html" :: page)
-        |> String.concat ~sep:"/"
-        |> fun path ->
-        if String.(anchor = "") then path else path ^ "#" ^ anchor
-    | Error e -> failwith (Url.Error.to_string e)
-  in
-  fun db (ids : (Model.Paths.Identifier.any * _) list) ->
-    let open Sqlite3 in
-    let stmt =
-      prepare db
-        "INSERT OR IGNORE INTO searchIndex(name, type, path) VALUES (?,?,?);"
-    in
-    exec db "BEGIN TRANSACTION;" |> ok_exn ;
-    List.iter
-      ~f:(fun (id, type_) ->
-        let open Data in
-        bind stmt 1 (TEXT (id_to_string id)) |> ok_exn ;
-        bind stmt 2 (TEXT type_) |> ok_exn ;
-        bind stmt 3 (TEXT (url id)) |> ok_exn ;
-        step stmt |> done_exn ;
-        reset stmt |> ok_exn )
-      ids ;
-    exec db "END TRANSACTION;" |> ok_exn
+let url_to_string Html.Url.({page; anchor; _}) =
+  List.rev ("index.html" :: page)
+  |> String.concat ~sep:"/"
+  |> fun path -> if String.(anchor = "") then path else path ^ "#" ^ anchor
 
-let add_anchors docu_dir ids =
-  List.fold_left
-    ~f:(fun m (id, type_) ->
+let update_index db docu_dir (ids : (Model.Paths.Identifier.any * _) list) =
+  let open Sqlite3 in
+  let stmt =
+    prepare db
+      "INSERT OR IGNORE INTO searchIndex(name, type, path) VALUES (?,?,?);"
+  in
+  exec db "BEGIN TRANSACTION;" |> Rc.ok_exn ;
+  let soups = Hashtbl.Poly.create () in
+  List.iter ids ~f:(fun (id, type_) ->
       let open Html in
       let url = Url.from_identifier ~stop_before:false id in
-      let Url.({page; anchor; _}) =
+      let url =
         match url with
         | Ok x -> x
         | Error e -> failwith (Url.Error.to_string e)
       in
       let file =
         let html_path =
-          List.rev ("index.html" :: page)
+          List.rev ("index.html" :: url.page)
           |> String.concat ~sep:"/" |> Fpath.of_string |> ok_exn
         in
         Fpath.(docu_dir // html_path)
       in
-      if String.(anchor = "") || not (OS.File.exists file |> ok_exn) then m
-      else
-        let name_ = Model.Paths.Identifier.name id in
-        let anchor_elem =
-          Soup.create_element
-            ~attributes:[("name", sprintf "//apple_ref/cpp/%s/%s" type_ name_)]
-            ~class_:"dashAnchor" "a"
+      if OS.File.exists file |> ok_exn then (
+        let url =
+          if String.(url.anchor = "") then url
+          else
+            let soup =
+              Hashtbl.find_or_add soups file ~default:(fun () ->
+                  OS.File.read file |> ok_exn |> Soup.parse )
+            in
+            let name_ = Model.Paths.Identifier.name id in
+            let new_anchor = sprintf "//apple_ref/cpp/%s/%s" type_ name_ in
+            let anchor_elem =
+              Soup.create_element ~attributes:[("name", new_anchor)]
+                ~class_:"dashAnchor" "a"
+            in
+            match
+              Soup.select_one (sprintf {|a[href="#%s"]|} url.anchor) soup
+            with
+            | Some node ->
+                Soup.prepend_child node anchor_elem ;
+                {url with anchor= new_anchor}
+            | None ->
+                Logs.warn (fun m ->
+                    m "Could not find anchor node for %s in %s." url.anchor
+                      (Fpath.to_string file) ) ;
+                url
         in
-        Fpath.Map.update file
-          (function
-            | Some xs -> Some ((anchor, anchor_elem) :: xs)
-            | None -> Some [(anchor, anchor_elem)])
-          m )
-    ~init:Fpath.Map.empty ids
-  |> Fpath.Map.iter (fun file anchors ->
-         let soup = OS.File.read file |> ok_exn |> Soup.parse in
-         List.iter
-           ~f:(fun (anchor, anchor_elem) ->
-             match Soup.select_one (sprintf {|a[href="#%s"]|} anchor) soup with
-             | Some node -> Soup.prepend_child node anchor_elem
-             | None ->
-                 Logs.warn (fun m ->
-                     m "Could not find anchor node for %s in %s." anchor
-                       (Fpath.to_string file) ) )
-           anchors ;
-         OS.File.write file (Soup.to_string soup) |> ok_exn )
+        let open Data in
+        bind stmt 1 (TEXT (id_to_string id)) |> Rc.ok_exn ;
+        bind stmt 2 (TEXT type_) |> Rc.ok_exn ;
+        bind stmt 3 (TEXT (url_to_string url)) |> Rc.ok_exn ;
+        step stmt |> Rc.done_exn ;
+        reset stmt |> Rc.ok_exn )
+      else () ) ;
+  exec db "END TRANSACTION;" |> Rc.ok_exn ;
+  Hashtbl.iteri soups ~f:(fun ~key:file ~data:soup ->
+      OS.File.write file (Soup.to_string soup) |> ok_exn )
 
 let create_template output_path =
   let docset_dir = Fpath.of_string output_path |> ok_exn in
@@ -379,7 +378,7 @@ let populate_db include_dirs pkgs db docu_dir =
              match load_unit builder f with
              | Ok unit ->
                  let ids = ids_of_unit unit in
-                 update_index db ids ; add_anchors docu_dir ids
+                 update_index db docu_dir ids
              | Error err -> Logs.err (fun m -> m "%s" (Error.to_string_hum err))
          ) )
 
