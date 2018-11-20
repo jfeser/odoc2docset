@@ -2,6 +2,10 @@ open Base
 open Printf
 open Bos
 open Cmdliner
+module Odoc = Odoc__odoc
+module Model = Odoc__model
+module Html = Odoc__html
+module Xref = Odoc__xref
 
 let insert db name typ path =
   let query =
@@ -329,8 +333,8 @@ let load_unit env path =
   let open Odoc in
   try
     let unit =
-      Odoc.Compilation_unit.load
-        (Odoc.Fs.File.of_string (Fpath.to_string path))
+      Compilation_unit.load (Fs.File.of_string (Fpath.to_string path))
+      |> Xref.Lookup.lookup
     in
     (* See comment in compile for explanation regarding the env duplication. *)
     let resolve_env = Env.build env (`Unit unit) in
@@ -345,7 +349,22 @@ let load_unit env path =
       (Error.create "Failed to resolve." (Fpath.to_string path)
          String.sexp_of_t)
 
+let rec odoc_files_exn d =
+  OS.Dir.contents d |> ok_exn
+  |> List.concat_map ~f:(fun f ->
+         if OS.Dir.exists f |> ok_exn then odoc_files_exn f
+         else if Fpath.has_ext "odoc" f then [f]
+         else [] )
+
+let rec all_subdirs d =
+  if OS.Dir.exists d |> ok_exn then
+    d :: (OS.Dir.contents d |> ok_exn |> List.concat_map ~f:all_subdirs)
+  else []
+
 let populate_db include_dirs pkgs db docu_dir =
+  List.iter include_dirs ~f:(fun d ->
+      Logs.debug (fun m -> m "Include dir: %s" (Odoc.Fs.Directory.to_string d))
+  ) ;
   let builder =
     Odoc.Env.create ~important_digests:true ~directories:include_dirs
   in
@@ -354,16 +373,15 @@ let populate_db include_dirs pkgs db docu_dir =
       Logs.info (fun m -> m "Indexing %s." name) ;
       insert db name "Package" (sprintf "%s/index.html" name) ;
       let cachedir = Odig.Pkg.cachedir pkg in
-      OS.Dir.contents cachedir |> ok_exn
+      odoc_files_exn cachedir
       |> List.iter ~f:(fun f ->
              Logs.debug (fun m -> m "Loading %s." (Fpath.to_string f)) ;
-             if Fpath.has_ext "odoc" f then
-               match load_unit builder f with
-               | Ok unit ->
-                   let ids = ids_of_unit unit in
-                   update_index db ids ; add_anchors docu_dir ids
-               | Error err ->
-                   Logs.err (fun m -> m "%s" (Error.to_string_hum err)) ) )
+             match load_unit builder f with
+             | Ok unit ->
+                 let ids = ids_of_unit unit in
+                 update_index db ids ; add_anchors docu_dir ids
+             | Error err -> Logs.err (fun m -> m "%s" (Error.to_string_hum err))
+         ) )
 
 let main () output_path pkg_names =
   (* Get Odig configuration. *)
@@ -382,8 +400,7 @@ let main () output_path pkg_names =
                 None )
   in
   let include_dirs =
-    List.concat_map all_pkgs ~f:(fun pkg ->
-        [Odig.Pkg.libdir pkg; Odig.Pkg.cachedir pkg] )
+    List.concat_map all_pkgs ~f:(fun pkg -> all_subdirs (Odig.Pkg.cachedir pkg))
     |> List.map ~f:(fun d -> Odoc.Fs.Directory.of_string (Fpath.to_string d))
   in
   (* Create the docset template. *)
