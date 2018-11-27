@@ -5,6 +5,7 @@ Converts [Odoc](https://github.com/ocaml-doc/odoc) generated documentation into 
 ## Installation
 
 ```
+opam pin add odoc https://github.com/ocaml/odoc.git
 opam pin add odoc2docset https://github.com/jfeser/odoc2docset.git
 opam install odoc2docset
 ```
