@@ -190,15 +190,15 @@ let ids_of_unit unit =
   and process_signature_item =
     let open Signature in
     function
-    | Module x -> process_module x
+    | Module (_, x) -> process_module x
     | ModuleType x -> process_module_type x
-    | Type x -> process_type x
+    | Type (_, x) -> process_type x
     | TypExt x -> process_type_ext x
     | Exception x -> process_exception x
     | Value x -> process_value x
     | External x -> process_external x
-    | Class x -> process_class x
-    | ClassType x -> process_class_type x
+    | Class (_, x) -> process_class x
+    | ClassType (_, x) -> process_class_type x
     | Include x -> process_include x
     | Comment _ -> ()
   and process_signature sig_ = List.iter ~f:process_signature_item sig_
