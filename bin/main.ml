@@ -2,6 +2,8 @@ open Base
 open Printf
 open Bos
 open Cmdliner
+open Rresult
+open Stdio
 module Odoc = Odoc__odoc
 module Model = Odoc__model
 module Html = Odoc__html
@@ -14,12 +16,18 @@ module Sqlite3 = struct
     let ok_exn =
       let open Sqlite3.Rc in
       function
-      | OK -> () | e -> failwith (sprintf "Sqlite error: %s" (to_string e))
+      | OK -> ()
+      | e ->
+          Logs.err (fun m -> m "Sqlite error: %s" (to_string e)) ;
+          Caml.exit 1
 
     let done_exn =
       let open Sqlite3.Rc in
       function
-      | DONE -> () | e -> failwith (sprintf "Sqlite error: %s" (to_string e))
+      | DONE -> ()
+      | e ->
+          Logs.err (fun m -> m "Sqlite error: %s" (to_string e)) ;
+          Caml.exit 1
   end
 
   include (Sqlite3 : module type of Sqlite3 with module Rc := Rc)
@@ -39,6 +47,11 @@ let ok_exn : ('a, [`Msg of string]) Caml.Pervasives.result -> 'a = function
   | Error (`Msg e) ->
       Logs.err (fun m -> m "%s" e) ;
       Caml.exit 1
+
+let tar =
+  (* Prefer GNU tar to BSD tar. *)
+  let tar_cmds = Cmd.[v "gtar"; v "tar"] in
+  List.find_exn tar_cmds ~f:(fun c -> OS.Cmd.exists c |> ok_exn)
 
 let plist pkg_name =
   sprintf
@@ -290,6 +303,7 @@ let create_template output_path =
   let res_dir = Fpath.(docset_dir / "Contents" / "Resources") in
   let docu_dir = Fpath.(res_dir / "Documents") in
   let db_file = Fpath.(res_dir / "docSet.dsidx") in
+  OS.Cmd.run Cmd.(v "rm" % "-rf" % p docset_dir) |> ok_exn ;
   OS.Dir.create docu_dir |> ok_exn |> ignore ;
   OS.File.write
     Fpath.(docset_dir / "Contents" / "Info.plist")
@@ -304,17 +318,17 @@ let create_template output_path =
     |> run_status ~quiet:true)
   |> ok_exn |> ignore ;
   OS.Path.delete db_file |> ok_exn ;
-  (docu_dir, db_file)
+  (docset_dir, docu_dir, db_file)
 
 let create_db db_file =
   let db = Sqlite3.db_open (Fpath.to_string db_file) in
-  ignore
-    (Sqlite3.exec db
-       "CREATE TABLE searchIndex(id INTEGER PRIMARY KEY, name TEXT, type \
-        TEXT, path TEXT);") ;
-  ignore
-    (Sqlite3.exec db
-       "CREATE UNIQUE INDEX anchor ON searchIndex (name, type, path);") ;
+  Sqlite3.exec db
+    "CREATE TABLE searchIndex(id INTEGER PRIMARY KEY, name TEXT, type TEXT, \
+     path TEXT);"
+  |> Sqlite3.Rc.ok_exn ;
+  Sqlite3.exec db
+    "CREATE UNIQUE INDEX anchor ON searchIndex (name, type, path);"
+  |> Sqlite3.Rc.ok_exn ;
   db
 
 let depends conf pkg =
@@ -382,7 +396,81 @@ let populate_db include_dirs pkgs db docu_dir =
              | Error err -> Logs.err (fun m -> m "%s" (Error.to_string_hum err))
          ) )
 
-let main () output_path pkg_names =
+let tarix_to_sqlite tarix_fn sqlite_fn =
+  (* Create new sqlite db. *)
+  let db = Sqlite3.db_open (Fpath.to_string sqlite_fn) in
+  Sqlite3.exec db
+    "CREATE TABLE tarindex(path TEXT PRIMARY KEY COLLATE NOCASE, hash TEXT);\n\
+     CREATE TABLE toextract(path TEXT PRIMARY KEY COLLATE NOCASE, hash TEXT);\n"
+  |> Sqlite3.Rc.ok_exn ;
+  let insert_stmt =
+    Sqlite3.prepare db
+      "INSERT OR IGNORE INTO tarindex(path, hash) VALUES (?,?);"
+  in
+  Sqlite3.(exec db "BEGIN TRANSACTION;" |> Rc.ok_exn) ;
+  In_channel.with_file (Fpath.to_string tarix_fn) ~f:(fun ch ->
+      In_channel.fold_lines ch ~init:0 ~f:(fun lnum line ->
+          ( if lnum > 0 then
+            match String.split line ~on:' ' with
+            | [kind; off1; off2; len; fn] ->
+                if String.(kind = "0") then (
+                  Sqlite3.(
+                    bind insert_stmt 1 (TEXT fn) |> Rc.ok_exn ;
+                    bind insert_stmt 2
+                      (TEXT (String.concat ~sep:" " [off1; off2; len]))
+                    |> Rc.ok_exn ;
+                    step insert_stmt |> Rc.done_exn ;
+                    reset insert_stmt |> Rc.ok_exn) )
+            | _ ->
+                Logs.warn (fun m -> m "Unexpected line in tarix file: %s" line)
+          ) ;
+          lnum + 1 )
+      |> ignore ) ;
+  Sqlite3.(exec db "END TRANSACTION;" |> Rc.ok_exn)
+
+let compress_docset docset_dir =
+  let temp_tgz = Caml.Filename.temp_file "tarix" ".tgz" in
+  let temp_idx = Caml.Filename.temp_file "tarixIndex" ".dbtxt" in
+  let temp_db = Caml.Filename.temp_file "docSet" ".dsidx" in
+  let db_file =
+    Fpath.(docset_dir / "Contents" / "Resources" / "docSet.dsidx")
+  in
+  (* Copy out the docset index. *)
+  OS.Cmd.run Cmd.(v "cp" % p db_file % temp_db) |> ok_exn ;
+  (* Use tarix to compress the entire docset. *)
+  OS.Env.set_var "TARIX" (Some (sprintf "-z -9 -f %s" temp_idx)) |> ok_exn ;
+  (* Convert the tarix index to a sqlite index. *)
+  let docset_base, docset_rel = Fpath.split_base docset_dir in
+  OS.Cmd.run
+    Cmd.(
+      tar % "-c" % "-f" % temp_tgz % "--use-compress-program" % "tarix" % "-C"
+      % p docset_base % p docset_rel)
+  |> ok_exn ;
+  (* Create a new docset template. *)
+  OS.Cmd.run Cmd.(v "rm" % "-rf" % p docset_dir) |> ok_exn ;
+  let _ = create_template (Fpath.to_string docset_dir) in
+  (* Generate a sqlite based tar index. *)
+  tarix_to_sqlite
+    (Fpath.of_string temp_idx |> ok_exn)
+    Fpath.(docset_dir / "Contents" / "Resources" / "tarixIndex.db") ;
+  (* Copy the docset index and compressed docset back in. *)
+  OS.Cmd.run
+    Cmd.(
+      v "rm" % "-rf"
+      % p Fpath.(docset_dir / "Contents" / "Resources" / "Documents"))
+  |> ok_exn ;
+  OS.Cmd.run
+    Cmd.(
+      v "cp" % temp_tgz
+      % p Fpath.(docset_dir / "Contents" / "Resources" / "tarix.tgz"))
+  |> ok_exn ;
+  OS.Cmd.run
+    Cmd.(
+      v "cp" % temp_db
+      % p Fpath.(docset_dir / "Contents" / "Resources" / "docSet.dsidx"))
+  |> ok_exn
+
+let main () compress output_path pkg_names =
   (* Get Odig configuration. *)
   let conf = Odig.Conf.of_opam_switch () |> ok_exn in
   let all_pkgs = Odig.Pkg.set conf |> ok_exn |> Odig.Pkg.Set.to_list in
@@ -403,7 +491,7 @@ let main () output_path pkg_names =
     |> List.map ~f:(fun d -> Odoc.Fs.Directory.of_string (Fpath.to_string d))
   in
   (* Create the docset template. *)
-  let docu_dir, db_file = create_template output_path in
+  let docset_dir, docu_dir, db_file = create_template output_path in
   (* Generate documentation using Odoc. *)
   Logs.info (fun m -> m "Running odoc.") ;
   let names = List.map pkgs ~f:Odig.Pkg.name in
@@ -412,26 +500,29 @@ let main () output_path pkg_names =
   Logs.info (fun m -> m "Done running odoc.") ;
   (* Copy documentation. *)
   Logs.info (fun m -> m "Copying documentation.") ;
-  let cp = Cmd.v "cp" in
   List.iter pkgs ~f:(fun pkg ->
       Logs.debug (fun m -> m "Copying %s." (Odig.Pkg.name pkg)) ;
       let doc_dir = Odig.Odoc.htmldir conf (Some pkg) in
-      let cmd = Cmd.(cp % "-r" % p doc_dir % p docu_dir) in
+      let cmd = Cmd.(v "cp" % "-r" % p doc_dir % p docu_dir) in
       OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore ) ;
   (* Copy theme CSS & JS. *)
   let theme_dir = "~/.opam/default/share/odoc/odoc-theme/default/" in
   let cmd =
     Cmd.(
-      cp
+      v "cp"
       % (theme_dir ^ "highlight.pack.js")
       % (theme_dir ^ "odoc.css") % p docu_dir)
   in
-  OS.Cmd.run_status ~quiet:true cmd |> ignore ;
+  OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore ;
   Logs.info (fun m -> m "Done copying documentation.") ;
   Logs.info (fun m -> m "Creating index.") ;
   let db = create_db db_file in
   populate_db include_dirs pkgs db docu_dir ;
-  Logs.info (fun m -> m "Done creating index.")
+  Logs.info (fun m -> m "Done creating index.") ;
+  if compress then (
+    Logs.info (fun m -> m "Compressing docset.") ;
+    compress_docset docset_dir ;
+    Logs.info (fun m -> m "Done compressing docset.") )
 
 let setup_log style_renderer level =
   Fmt_tty.setup_std_outputs ?style_renderer () ;
@@ -442,6 +533,10 @@ let setup_log style_renderer level =
 let cmd =
   let setup_log =
     Term.(const setup_log $ Fmt_cli.style_renderer () $ Logs_cli.level ())
+  in
+  let compressed =
+    let doc = "Generate a compressed docset." in
+    Arg.(value & flag & info ["c"; "compress"] ~doc)
   in
   let docset_dir =
     let doc =
@@ -457,7 +552,8 @@ let cmd =
     in
     Arg.(value & pos_right 0 string [] & info [] ~docv:"PKG" ~doc)
   in
-  (Term.(const main $ setup_log $ docset_dir $ pkgs), Term.info "odoc2docset")
+  ( Term.(const main $ setup_log $ compressed $ docset_dir $ pkgs)
+  , Term.info "odoc2docset" )
 
 let () = Term.(exit @@ eval cmd)
 
