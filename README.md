@@ -1,10 +1,15 @@
 # odoc2docset
 
-Converts [Odoc](https://github.com/ocaml-doc/odoc) generated documentation into [Dash](https://kapeli.com/dash) (or [Zeal](https://zealdocs.org/)) docsets.
+Converts [Odoc](https://github.com/ocaml-doc/odoc) generated documentation into
+[Dash](https://kapeli.com/dash) (or [Zeal](https://zealdocs.org/)) docsets.
 
 ## Installation
 
+At the moment, `odoc2docset` requires the development version of `odoc`.
+Hopefully this will change with the next `odoc` release.
+
 ```
+opam pin add odoc https://github.com/ocaml/odoc.git
 opam pin add odoc2docset https://github.com/jfeser/odoc2docset.git
 opam install odoc2docset
 ```
@@ -22,6 +27,12 @@ To generate documentation for a subset of packages, run:
 ```
 odoc2docset Opam.docset pkgA pkgB pkgC
 ```
+
+### Compression
+
+By default, `odoc2docset` will create uncompressed docsets. Compressed docsets
+can be created using the `--compress` option. This mode requires
+[tarix](https://github.com/fastcat/tarix/) and GNU tar.
 
 ## Known bugs
 
