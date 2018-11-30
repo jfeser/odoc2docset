@@ -1,3 +1,8 @@
+## 1.2 (2018-11-29)
+
+ - Support compressed docsets.
+ - Fix reference to odoc css/js theme.
+
 ## 1.1 (2018-11-27)
 
  - Sync with upstream `odoc`.
