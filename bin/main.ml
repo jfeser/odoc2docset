@@ -53,6 +53,13 @@ let tar =
   let tar_cmds = Cmd.[v "gtar"; v "tar"] in
   List.find_exn tar_cmds ~f:(fun c -> OS.Cmd.exists c |> ok_exn)
 
+let opam_root =
+  Fpath.of_string (OS.Env.req_var "OPAM_SWITCH_PREFIX" |> ok_exn) |> ok_exn
+
+let etc = Fpath.(opam_root / "etc" / "odoc2docset")
+
+let odoc_share = Fpath.(opam_root / "share" / "odoc")
+
 let plist pkg_name =
   sprintf
     {|<?xml version="1.0" encoding="UTF-8"?>
@@ -309,13 +316,12 @@ let create_template output_path =
     Fpath.(docset_dir / "Contents" / "Info.plist")
     (plist docset_name)
   |> ok_exn ;
-  let etc_dir = Fpath.of_string Opam_config.etc |> ok_exn in
   OS.Cmd.(
-    Cmd.(
-      v "cp"
-      % Fpath.(etc_dir / "icon.png" |> to_string)
-      % Fpath.(docset_dir / "icon.png" |> to_string))
-    |> run_status ~quiet:true)
+    run_status ~quiet:true
+      Cmd.(
+        v "cp"
+        % Fpath.(etc / "icon.png" |> to_string)
+        % Fpath.(docset_dir / "icon.png" |> to_string)))
   |> ok_exn |> ignore ;
   OS.Path.delete db_file |> ok_exn ;
   (docset_dir, docu_dir, db_file)
@@ -506,12 +512,13 @@ let main () compress output_path pkg_names =
       let cmd = Cmd.(v "cp" % "-r" % p doc_dir % p docu_dir) in
       OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore ) ;
   (* Copy theme CSS & JS. *)
-  let theme_dir = "~/.opam/default/share/odoc/odoc-theme/default/" in
+  let theme_dir = Fpath.(odoc_share / "odoc-theme" / "default") in
   let cmd =
     Cmd.(
       v "cp"
-      % (theme_dir ^ "highlight.pack.js")
-      % (theme_dir ^ "odoc.css") % p docu_dir)
+      % p Fpath.(theme_dir / "highlight.pack.js")
+      % p Fpath.(theme_dir / "odoc.css")
+      % p docu_dir)
   in
   OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore ;
   Logs.info (fun m -> m "Done copying documentation.") ;

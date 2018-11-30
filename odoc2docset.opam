@@ -9,7 +9,6 @@ bug-reports: "https://github.com/jfeser/odoc2docset/issues"
 dev-repo: "https://github.com/jfeser/odoc2docset.git"
 doc: "https://jfeser.github.io/odoc2docset/"
 build: [
-  ["ocaml" "bin/config" "bin/config.ml" odoc2docset:etc]
   ["dune" "build" "-p" name "-j" jobs]
 ]
 depends: [
