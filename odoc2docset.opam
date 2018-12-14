@@ -1,4 +1,4 @@
-opam-version: "1.2"
+opam-version: "2.0"
 name: "odoc2docset"
 version: "1.2"
 maintainer: "Jack Feser <feser@csail.mit.edu>"
@@ -6,7 +6,7 @@ authors: "Jack Feser <feser@csail.mit.edu>"
 license: "MIT"
 homepage: "https://github.com/jfeser/odoc2docset"
 bug-reports: "https://github.com/jfeser/odoc2docset/issues"
-dev-repo: "https://github.com/jfeser/odoc2docset.git"
+dev-repo: "git+https://github.com/jfeser/odoc2docset.git"
 doc: "https://jfeser.github.io/odoc2docset/"
 build: [
   ["dune" "build" "-p" name "-j" jobs]
@@ -23,4 +23,7 @@ depends: [
   "lambdasoup"   {>= "0.6.3" & < "0.7"}
   "cmdliner"     {>= "1.0.2" & < "1.1"}
   "fmt"          {>= "0.8.5" & < "0.9"}
+]
+pin-depends: [
+  ["odoc.dev" "git+https://github.com/jfeser/odoc"]
 ]
