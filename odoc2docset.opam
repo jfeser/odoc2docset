@@ -1,6 +1,11 @@
 opam-version: "2.0"
 name: "odoc2docset"
-version: "1.2"
+synopsis: "Generates Dash docsets using Odoc"
+description: """
+Generates Dash docsets for OCaml packages using the Odoc documentation
+generator.
+"""
+version: "1.2.1"
 maintainer: "Jack Feser <feser@csail.mit.edu>"
 authors: "Jack Feser <feser@csail.mit.edu>"
 license: "MIT"

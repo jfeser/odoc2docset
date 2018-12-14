@@ -1,3 +1,7 @@
+## 1.2.1 (2018-12-14)
+
+ - Automatically pin dependencies.
+
 ## 1.2 (2018-11-29)
 
  - Support compressed docsets.
