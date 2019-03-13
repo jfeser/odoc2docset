@@ -1,4 +1,4 @@
 (executable
  (name main)
  (public_name odoc2docset)
- (libraries sqlite3 odig bos odoc.odoc odoc.model odoc.html lambdasoup logs logs.cli fmt.cli base stdio cmdliner))
+ (libraries sqlite3 bos odoc.odoc odoc.model odoc.html lambdasoup logs logs.fmt logs.cli fmt.cli fmt.tty base stdio cmdliner))

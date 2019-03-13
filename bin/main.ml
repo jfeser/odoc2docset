@@ -9,6 +9,46 @@ module Model = Odoc__model
 module Html = Odoc__html
 module Xref = Odoc__xref
 
+let ok_exn = function
+  | Ok x -> x
+  | Error (`Msg e) ->
+      Logs.err (fun m -> m "%s" e) ;
+      Caml.exit 1
+
+module Odig = struct
+  type t = {cachedir: Fpath.t}
+
+  let create () =
+    let out =
+      OS.Cmd.run_out Cmd.(v "odig" % "conf")
+      |> OS.Cmd.to_string ~trim:true
+      |> ok_exn
+    in
+    let cachedir =
+      String.split ~on:'\n' out |> List.hd_exn |> String.split ~on:':'
+      |> (fun l -> List.nth_exn l 1)
+      |> String.strip
+    in
+    {cachedir= Fpath.of_string cachedir |> ok_exn}
+
+  let htmldir c pkg = Fpath.(c.cachedir / "html" / pkg)
+
+  let cachedir c pkg = Fpath.(c.cachedir / "cache" / pkg)
+
+  let all_pkgs () =
+    let out =
+      OS.Cmd.run_out Cmd.(v "odig" % "pkg" % "--short")
+      |> OS.Cmd.to_string ~trim:true
+      |> ok_exn
+    in
+    String.split ~on:'\n' out
+
+  let theme_dir () =
+    OS.Cmd.run_out Cmd.(v "odig" % "odoc-theme" % "path")
+    |> OS.Cmd.to_string ~trim:true
+    |> ok_exn |> Fpath.of_string |> ok_exn
+end
+
 module Sqlite3 = struct
   module Rc = struct
     include Sqlite3.Rc
@@ -42,12 +82,6 @@ let insert db name typ path =
   in
   ignore (Sqlite3.exec db query)
 
-let ok_exn : ('a, [`Msg of string]) Caml.Pervasives.result -> 'a = function
-  | Ok x -> x
-  | Error (`Msg e) ->
-      Logs.err (fun m -> m "%s" e) ;
-      Caml.exit 1
-
 let tar =
   (* Prefer GNU tar to BSD tar. *)
   let tar_cmds = Cmd.[v "gtar"; v "tar"] in
@@ -57,8 +91,6 @@ let opam_root =
   Fpath.of_string (OS.Env.req_var "OPAM_SWITCH_PREFIX" |> ok_exn) |> ok_exn
 
 let etc = Fpath.(opam_root / "etc" / "odoc2docset")
-
-let odoc_share = Fpath.(opam_root / "share" / "odoc")
 
 let plist pkg_name =
   sprintf
@@ -83,223 +115,357 @@ let plist pkg_name =
     |}
     pkg_name pkg_name pkg_name
 
-let rec id_to_string =
-  let module Id = Model.Paths.Identifier in
-  function
-  | Id.Root (_, x) | Id.Page (_, x) | Id.CoreType x | Id.CoreException x -> x
-  | Id.Module (p, x)
-   |Id.ModuleType (p, x)
-   |Id.Type (p, x)
-   |Id.Extension (p, x)
-   |Id.Exception (p, x)
-   |Id.Value (p, x)
-   |Id.Class (p, x)
-   |Id.ClassType (p, x) ->
-      id_to_string (Id.any p) ^ "." ^ x
-  | Id.Method (p, x) | Id.InstanceVariable (p, x) ->
-      id_to_string (Id.any p) ^ "#" ^ x
-  | Id.Constructor (p, x) -> (
-    match p with
-    | Id.Type (p, _) -> id_to_string (Id.any p) ^ "." ^ x
-    | Id.CoreType _ -> x )
-  | Id.Field (p, x) -> (
-    match p with
-    | Id.Root (_, y) | Id.Module (_, y) | Id.ModuleType (_, y) -> y ^ "." ^ x
-    | Id.Argument (_, _, _) -> id_to_string (Id.any p) ^ "." ^ x
-    | Id.Type (p, _) -> id_to_string (Id.any p) ^ "." ^ x
-    | Id.CoreType _ -> x
-    | Id.Class (_, y) | Id.ClassType (_, y) -> y ^ "#" ^ x )
-  | Id.Label _ | Id.Argument _ -> failwith "No printable path."
+let id_to_string id =
+  let open Model.Paths_types.Identifier in
+  let open Model.Names in
+  let exception Not_printable in
+  let rec i2s = function
+    | `Root (_, x) -> UnitName.to_string x
+    | `Page (_, x) -> PageName.to_string x
+    | `CoreType x -> TypeName.to_string x
+    | `CoreException x -> ExceptionName.to_string x
+    | `Module (p, x) -> i2s (p :> any) ^ "." ^ ModuleName.to_string x
+    | `ModuleType (p, x) -> i2s (p :> any) ^ "." ^ ModuleTypeName.to_string x
+    | `Type (p, x) -> i2s (p :> any) ^ "." ^ TypeName.to_string x
+    | `Extension (p, x) -> i2s (p :> any) ^ "." ^ ExtensionName.to_string x
+    | `Exception (p, x) -> i2s (p :> any) ^ "." ^ ExceptionName.to_string x
+    | `Value (p, x) -> i2s (p :> any) ^ "." ^ ValueName.to_string x
+    | `Class (p, x) -> i2s (p :> any) ^ "." ^ ClassName.to_string x
+    | `ClassType (p, x) -> i2s (p :> any) ^ "." ^ ClassTypeName.to_string x
+    | `Method (p, x) -> i2s (p :> any) ^ "#" ^ MethodName.to_string x
+    | `InstanceVariable (p, x) ->
+        i2s (p :> any) ^ "#" ^ InstanceVariableName.to_string x
+    | `Constructor (p, x) -> (
+      match p with
+      | `Type (p, _) -> i2s (p :> any) ^ "." ^ ConstructorName.to_string x
+      | `CoreType _ -> ConstructorName.to_string x )
+    | `Field (p, x) -> (
+      match p with
+      | `Root _ | `Module _ | `ModuleType _ | `Argument _ | `Type _
+       |`CoreType _ ->
+          i2s (p :> any) ^ "." ^ FieldName.to_string x
+      | `Class _ | `ClassType _ -> i2s (p :> any) ^ "#" ^ FieldName.to_string x
+      )
+    | `Label _ | `Argument _ -> raise Not_printable
+  in
+  try Some (i2s id) with Not_printable -> None
 
-let path_to_string (p : Model.Paths.Path.module_) =
+let path_to_string p =
   let module Path = Model.Paths.Path in
   match p with
-  | Path.Resolved p ->
-      Path.Resolved.identifier p |> Model.Paths.Identifier.any |> id_to_string
-  | _ -> "<unknown>"
+  | `Resolved p -> Path.Resolved.identifier p |> id_to_string
+  | _ -> Some "<unknown>"
+
+let is_hidden = String.is_substring ~substring:"__"
+
+class unit_visitor ids =
+  object
+    inherit Model.Maps.unit
+
+    method documentation x = x
+
+    method path_module x = x
+
+    method identifier_module = (new id_visitor ids)#identifier_module
+
+    method signature = (new sig_visitor ids)#signature
+
+    method root x = x
+  end
+
+and id_visitor ids =
+  let open Model.Paths_types.Identifier in
+  object
+    inherit Model.Maps.identifier
+
+    method root x = x
+
+    method! identifier_class id =
+      ids := ((id :> any), "Class") :: !ids ;
+      id
+
+    method! identifier_constructor id =
+      ids := ((id :> any), "Constructor") :: !ids ;
+      id
+
+    method! identifier_datatype id =
+      ids := ((id :> any), "Type") :: !ids ;
+      id
+
+    method! identifier_exception id =
+      ids := ((id :> any), "Exception") :: !ids ;
+      id
+
+    method! identifier_field id =
+      ids := ((id :> any), "Field") :: !ids ;
+      id
+
+    method! identifier_instance_variable id =
+      ids := ((id :> any), "Variable") :: !ids ;
+      id
+
+    method! identifier_method id =
+      ids := ((id :> any), "Method") :: !ids ;
+      id
+
+    method! identifier_module id =
+      ids := ((id :> any), "Module") :: !ids ;
+      id
+
+    method! identifier_module_type id =
+      ids := ((id :> any), "Interface") :: !ids ;
+      id
+
+    method! identifier_page id =
+      ids := ((id :> any), "Section") :: !ids ;
+      id
+
+    method! identifier_signature id =
+      ids := ((id :> any), "Interface") :: !ids ;
+      id
+
+    method! identifier_type id =
+      ids := ((id :> any), "Type") :: !ids ;
+      id
+
+    method! identifier_value id =
+      ids := ((id :> any), "Value") :: !ids ;
+      id
+  end
+
+and value_visitor ids =
+  object
+    inherit Model.Maps.value
+
+    method documentation x = x
+
+    method type_expr x = x
+
+    method identifier_value = (new id_visitor ids)#identifier_value
+  end
+
+and type_decl_visitor ids =
+  object
+    inherit Model.Maps.type_decl
+
+    method documentation x = x
+
+    method type_expr x = x
+
+    method identifier_type = (new id_visitor ids)#identifier_type
+
+    method identifier_field = (new id_visitor ids)#identifier_field
+
+    method identifier_constructor = (new id_visitor ids)#identifier_constructor
+  end
+
+and module_visitor ids =
+  object
+    inherit Model.Maps.module_
+
+    method signature = (new sig_visitor ids)#signature
+
+    method identifier_module = (new id_visitor ids)#identifier_module
+
+    method reference_module x = x
+
+    method path_module x = x
+
+    method module_type_functor_arg x = x
+
+    method module_type_expr = (new module_type_visitor ids)#module_type_expr
+
+    method documentation x = x
+  end
+
+and module_type_visitor ids =
+  object
+    inherit Model.Maps.module_type
+
+    method documentation x = x
+
+    method fragment_module x = x
+
+    method identifier_module = (new id_visitor ids)#identifier_module
+
+    method identifier_module_type = (new id_visitor ids)#identifier_module_type
+
+    method type_decl_param_name x = x
+
+    method type_decl_equation x = x
+
+    method signature = (new sig_visitor ids)#signature
+
+    method path_type x = x
+
+    method path_module_type x = x
+
+    method path_module x = x
+
+    method module_expansion x = x
+
+    method module_equation x = x
+
+    method module_decl x = x
+
+    method fragment_type x = x
+  end
+
+and include_visitor ids =
+  object
+    inherit Model.Maps.include_
+
+    method documentation x = x
+
+    method identifier_signature x = x
+
+    method module_decl x = x
+
+    method signature = (new sig_visitor ids)#signature
+  end
+
+and external_visitor ids =
+  object
+    inherit Model.Maps.external_
+
+    method documentation x = x
+
+    method identifier_value = (new id_visitor ids)#identifier_value
+
+    method type_expr x = x
+  end
+
+and exception_visitor ids =
+  object
+    inherit Model.Maps.exception_
+
+    method documentation x = x
+
+    method identifier_exception = (new id_visitor ids)#identifier_exception
+
+    method type_expr x = x
+
+    method type_decl_constructor_argument x = x
+  end
+
+and sig_visitor ids =
+  object
+    inherit Model.Maps.signature
+
+    method documentation_comment x = x
+
+    method type_decl = (new type_decl_visitor ids)#type_decl
+
+    method module_type = (new module_type_visitor ids)#module_type
+
+    method module_ = (new module_visitor ids)#module_
+
+    method include_ = (new include_visitor ids)#include_
+
+    method external_ = (new external_visitor ids)#external_
+
+    method extension _ = failwith "extension"
+
+    method exception_ = (new exception_visitor ids)#exception_
+
+    method class_type _ = failwith "class_type"
+
+    method class_ _ = failwith "class_"
+
+    method value = (new value_visitor ids)#value
+  end
 
 (** Collect the identifiers (labeled with Dash types) in a compilation unit. *)
 let ids_of_unit unit =
-  let open Model.Lang in
-  let output = ref [] in
-  let index id type_ =
-    let id = Model.Paths.Identifier.any id in
-    Logs.debug (fun m -> m "Inserting %s : %s." (id_to_string id) type_) ;
-    output := (id, type_) :: !output
-  in
-  let nop _ = () in
-  let rec process_module_decl =
-    let open ModuleType in
-    let rec process_module_type_expr = function
-      | Signature s -> process_signature s
-      | Functor (_, x) -> process_module_type_expr x
-      | _ -> ()
-    in
-    let open Module in
-    function Alias _ -> () | ModuleType e -> process_module_type_expr e
-  and process_module
-      Module.({id; type_; expansion; hidden; display_type; canonical; _}) =
-    let open Module in
-    Logs.debug (fun m ->
-        let canon_str =
-          Option.map canonical ~f:(fun (path, _) -> path_to_string path)
-          |> Option.value ~default:"none"
-        in
-        m "Module %s hidden=%b canonical=%s"
-          (id_to_string (Model.Paths.Identifier.any id))
-          hidden canon_str ) ;
-    if not hidden then (
-      index id "Module" ;
-      let module_type = Option.value ~default:type_ display_type in
-      process_module_decl module_type ;
-      match expansion with
-      | Some (Signature s) | Some (Functor (_, s)) -> process_signature s
-      | None | Some AlreadyASig ->
-          Logs.debug (fun m ->
-              m "Module %s no expansion."
-                (id_to_string (Model.Paths.Identifier.any id)) ) )
-  and process_module_type ModuleType.({id; _}) = index id "Interface"
-  and process_type_ext = nop
-  and process_type TypeDecl.({id; representation; _}) =
-    index id "Type" ;
-    match representation with
-    | Some (Variant constrs) -> List.iter constrs ~f:process_constructor
-    | Some (Record fields) -> List.iter fields ~f:process_field
-    | _ -> ()
-  and process_constructor TypeDecl.Constructor.({id; args; _}) =
-    index id "Constructor" ;
-    match args with
-    | Record fields -> List.iter fields ~f:process_field
-    | _ -> ()
-  and process_field TypeDecl.Field.({id; _}) = index id "Field"
-  and process_exception Exception.({id; _}) = index id "Exception"
-  and process_val id type_ =
-    let open TypeExpr in
-    let kind =
-      match type_ with
-      | Arrow _ -> "Function"
-      | Object _ -> "Object"
-      | _ -> "Value"
-    in
-    index id kind
-  and process_value Value.({id; type_; _}) = process_val id type_
-  and process_external External.({id; type_; _}) = process_val id type_
-  and process_method Method.({id; private_; _}) =
-    if not private_ then index id "Method"
-  and process_instance_variable InstanceVariable.({id; _}) =
-    index id "Variable"
-  and process_class_signature ClassSignature.({items; _}) =
-    let open ClassSignature in
-    List.iter
-      ~f:(function
-        | Method x -> process_method x
-        | InstanceVariable x -> process_instance_variable x
-        | _ -> ())
-      items
-  and process_class Class.({id; type_; _}) =
-    let open Class in
-    let rec process_decl = function
-      | ClassType (Signature x) -> process_class_signature x
-      | ClassType (Constr _) -> ()
-      | Arrow (_, _, d) -> process_decl d
-    in
-    process_decl type_ ; index id "Class"
-  and process_class_type = nop
-  and process_include Include.({expansion= {content; _}; _}) =
-    process_signature content
-  and process_signature_item =
-    let open Signature in
-    function
-    | Module (_, x) -> process_module x
-    | ModuleType x -> process_module_type x
-    | Type (_, x) -> process_type x
-    | TypExt x -> process_type_ext x
-    | Exception x -> process_exception x
-    | Value x -> process_value x
-    | External x -> process_external x
-    | Class (_, x) -> process_class x
-    | ClassType (_, x) -> process_class_type x
-    | Include x -> process_include x
-    | Comment _ -> ()
-  and process_signature sig_ = List.iter ~f:process_signature_item sig_
-  and process_unit Compilation_unit.({id; content; hidden; _}) =
-    let process_packed items =
-      List.iter
-        ~f:(fun Compilation_unit.Packed.({id; _}) -> index id "Module")
-        items
-    in
-    Logs.debug (fun m ->
-        m "Unit %s hidden=%b"
-          (id_to_string (Model.Paths.Identifier.any id))
-          hidden ) ;
-    if not hidden then
-      match content with
-      | Module x -> index id "Module" ; process_signature x
-      | Pack x -> process_packed x
-  in
-  process_unit unit ; !output
+  let ids = ref [] in
+  (new unit_visitor ids)#unit unit |> ignore ;
+  !ids
 
-let url_to_string Html.Url.({page; anchor; _}) =
+let url_to_string Html.Url.{page; anchor; _} =
   List.rev ("index.html" :: page)
   |> String.concat ~sep:"/"
   |> fun path -> if String.(anchor = "") then path else path ^ "#" ^ anchor
 
-let update_index db docu_dir (ids : (Model.Paths.Identifier.any * _) list) =
+let update_index db docu_dir ids =
   let open Sqlite3 in
+  let open Html in
   let stmt =
     prepare db
       "INSERT OR IGNORE INTO searchIndex(name, type, path) VALUES (?,?,?);"
   in
   exec db "BEGIN TRANSACTION;" |> Rc.ok_exn ;
   let soups = Hashtbl.Poly.create () in
-  List.iter ids ~f:(fun (id, type_) ->
-      let open Html in
-      let url = Url.from_identifier ~stop_before:false id in
-      let url =
-        match url with
-        | Ok x -> x
-        | Error e -> failwith (Url.Error.to_string e)
-      in
-      let file =
-        let html_path =
-          List.rev ("index.html" :: url.page)
-          |> String.concat ~sep:"/" |> Fpath.of_string |> ok_exn
-        in
-        Fpath.(docu_dir // html_path)
-      in
-      if OS.File.exists file |> ok_exn then (
-        let url =
-          if String.(url.anchor = "") then url
-          else
-            let soup =
-              Hashtbl.find_or_add soups file ~default:(fun () ->
-                  OS.File.read file |> ok_exn |> Soup.parse )
-            in
-            let name_ = Model.Paths.Identifier.name id in
-            let new_anchor = sprintf "//apple_ref/cpp/%s/%s" type_ name_ in
-            let anchor_elem =
-              Soup.create_element ~attributes:[("name", new_anchor)]
-                ~class_:"dashAnchor" "a"
-            in
-            match
-              Soup.select_one (sprintf {|a[href="#%s"]|} url.anchor) soup
-            with
-            | Some node ->
-                Soup.prepend_child node anchor_elem ;
-                {url with anchor= new_anchor}
-            | None ->
-                Logs.warn (fun m ->
-                    m "Could not find anchor node for %s in %s." url.anchor
-                      (Fpath.to_string file) ) ;
-                url
-        in
-        let open Data in
-        bind stmt 1 (TEXT (id_to_string id)) |> Rc.ok_exn ;
-        bind stmt 2 (TEXT type_) |> Rc.ok_exn ;
-        bind stmt 3 (TEXT (url_to_string url)) |> Rc.ok_exn ;
-        step stmt |> Rc.done_exn ;
-        reset stmt |> Rc.ok_exn )
-      else () ) ;
+  (* Filter out the ids that don't have a string representation. *)
+  List.filter_map ids ~f:(fun (id, type_) ->
+      match id_to_string id with
+      | Some id_str -> Some (id, type_, id_str)
+      | None -> None )
+  (* Filter out hidden ids. *)
+  |> List.filter ~f:(fun (_, _, id_str) -> not (is_hidden id_str))
+  (* Filter out the ids that don't have a URL. *)
+  |> List.filter_map ~f:(fun (id, type_, id_str) ->
+         let open Html in
+         match Url.from_identifier ~stop_before:false id with
+         | Ok url -> Some (id, type_, id_str, url)
+         | Error e ->
+             Logs.warn (fun m ->
+                 m "Failed to get URL for id '%s': %s" id_str
+                   (Url.Error.to_string e) ) ;
+             None )
+  (* Filter out the ids that don't have a corresponding documentation file. *)
+  |> List.filter_map ~f:(fun (id, type_, id_str, url) ->
+         let file =
+           let html_path =
+             List.rev ("index.html" :: url.Url.page)
+             |> String.concat ~sep:"/" |> Fpath.of_string |> ok_exn
+           in
+           Fpath.(docu_dir // html_path)
+         in
+         if OS.File.exists file |> ok_exn then
+           Some (id, type_, id_str, url, file)
+         else (
+           Logs.warn (fun m ->
+               m "Documentation file %a does not exist." Fpath.pp file ) ;
+           None ) )
+  (* Filter out the ids that have an anchor that does not exist in the
+     documentation file. *)
+  |> List.filter_map ~f:(fun (id, type_, id_str, url, file) ->
+         let url =
+           if String.(url.Url.anchor = "") then Some url
+           else
+             let soup =
+               Hashtbl.find_or_add soups file ~default:(fun () ->
+                   OS.File.read file |> ok_exn |> Soup.parse )
+             in
+             let name_ = Model.Paths.Identifier.name id in
+             let new_anchor = sprintf "//apple_ref/cpp/%s/%s" type_ name_ in
+             let anchor_elem =
+               Soup.create_element ~attributes:[("name", new_anchor)]
+                 ~class_:"dashAnchor" "a"
+             in
+             match
+               Soup.select_one (sprintf {|a[href="#%s"]|} url.anchor) soup
+             with
+             | Some node ->
+                 Soup.prepend_child node anchor_elem ;
+                 Some {url with anchor= new_anchor}
+             | None ->
+                 Logs.warn (fun m ->
+                     m "Could not find anchor node for %s in %s." url.anchor
+                       (Fpath.to_string file) ) ;
+                 None
+         in
+         Option.map url ~f:(fun url -> (type_, id_str, url)) )
+  (* Insert ids into the database. *)
+  |> List.iter ~f:(fun (type_, id_str, url) ->
+         let url_str = url_to_string url in
+         Logs.debug (fun m -> m "Inserting %s %s %s" id_str type_ url_str) ;
+         let open Data in
+         bind stmt 1 (TEXT id_str) |> Rc.ok_exn ;
+         bind stmt 2 (TEXT type_) |> Rc.ok_exn ;
+         bind stmt 3 (TEXT url_str) |> Rc.ok_exn ;
+         step stmt |> Rc.done_exn ;
+         reset stmt |> Rc.ok_exn ) ;
   exec db "END TRANSACTION;" |> Rc.ok_exn ;
   Hashtbl.iteri soups ~f:(fun ~key:file ~data:soup ->
       OS.File.write file (Soup.to_string soup) |> ok_exn )
@@ -337,15 +503,6 @@ let create_db db_file =
   |> Sqlite3.Rc.ok_exn ;
   db
 
-let depends conf pkg =
-  Odig.Pkg.deps pkg |> ok_exn |> Astring.String.Set.elements
-  |> List.filter_map ~f:(fun n ->
-         match Odig.Pkg.lookup conf (Odig.Pkg.name_of_string n |> ok_exn) with
-         | Ok p -> Some p
-         | Error (`Msg e) ->
-             Logs.warn (fun m -> m "Looking up package %s failed: %s" n e) ;
-             None )
-
 (** Load a compilation unit, resolve and expand it. Taken straight from
    odoc/src/html_page.ml. *)
 let load_unit env path =
@@ -380,7 +537,7 @@ let rec all_subdirs d =
     d :: (OS.Dir.contents d |> ok_exn |> List.concat_map ~f:all_subdirs)
   else []
 
-let populate_db include_dirs pkgs db docu_dir =
+let populate_db conf include_dirs pkgs db docu_dir =
   List.iter include_dirs ~f:(fun d ->
       Logs.debug (fun m -> m "Include dir: %s" (Odoc.Fs.Directory.to_string d))
   ) ;
@@ -388,10 +545,9 @@ let populate_db include_dirs pkgs db docu_dir =
     Odoc.Env.create ~important_digests:true ~directories:include_dirs
   in
   List.iter pkgs ~f:(fun pkg ->
-      let name = Odig.Pkg.name pkg in
-      Logs.info (fun m -> m "Indexing %s." name) ;
-      insert db name "Package" (sprintf "%s/index.html" name) ;
-      let cachedir = Odig.Pkg.cachedir pkg in
+      Logs.info (fun m -> m "Indexing %s." pkg) ;
+      insert db pkg "Package" (sprintf "%s/index.html" pkg) ;
+      let cachedir = Odig.cachedir conf pkg in
       odoc_files_exn cachedir
       |> List.iter ~f:(fun f ->
              Logs.debug (fun m -> m "Loading %s." (Fpath.to_string f)) ;
@@ -476,55 +632,56 @@ let compress_docset docset_dir =
       % p Fpath.(docset_dir / "Contents" / "Resources" / "docSet.dsidx"))
   |> ok_exn
 
+let run_quiet cmd = OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore
+
 let main () compress output_path pkg_names =
   (* Get Odig configuration. *)
-  let conf = Odig.Conf.of_opam_switch () |> ok_exn in
-  let all_pkgs = Odig.Pkg.set conf |> ok_exn |> Odig.Pkg.Set.to_list in
+  let conf = Odig.create () in
+  let all_pkgs = Odig.all_pkgs () in
   (* Look up all the selected packages. *)
   let pkgs =
     match pkg_names with
     | [] -> all_pkgs
     | names ->
-        List.filter_map names ~f:(fun n ->
-            match Odig.Pkg.find conf n with
-            | Some pkg -> Some pkg
-            | None ->
-                Logs.err (fun m -> m "Could not find package %s." n) ;
-                None )
+        List.filter names ~f:(fun n ->
+            if List.mem all_pkgs n ~equal:String.( = ) then true
+            else (
+              Logs.err (fun m -> m "Could not find package %s." n) ;
+              false ) )
   in
   let include_dirs =
-    List.concat_map all_pkgs ~f:(fun pkg -> all_subdirs (Odig.Pkg.cachedir pkg))
+    List.concat_map all_pkgs ~f:(fun pkg ->
+        all_subdirs (Odig.cachedir conf pkg) )
     |> List.map ~f:(fun d -> Odoc.Fs.Directory.of_string (Fpath.to_string d))
   in
   (* Create the docset template. *)
   let docset_dir, docu_dir, db_file = create_template output_path in
   (* Generate documentation using Odoc. *)
   Logs.info (fun m -> m "Running odoc.") ;
-  let names = List.map pkgs ~f:Odig.Pkg.name in
-  OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list names) |> run_status ~quiet:true)
+  OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkgs) |> run_status ~quiet:true)
   |> ok_exn |> ignore ;
   Logs.info (fun m -> m "Done running odoc.") ;
   (* Copy documentation. *)
   Logs.info (fun m -> m "Copying documentation.") ;
   List.iter pkgs ~f:(fun pkg ->
-      Logs.debug (fun m -> m "Copying %s." (Odig.Pkg.name pkg)) ;
-      let doc_dir = Odig.Odoc.htmldir conf (Some pkg) in
+      Logs.debug (fun m -> m "Copying %s." pkg) ;
+      let doc_dir = Odig.htmldir conf pkg in
       let cmd = Cmd.(v "cp" % "-r" % p doc_dir % p docu_dir) in
       OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore ) ;
   (* Copy theme CSS & JS. *)
-  let theme_dir = Fpath.(odoc_share / "odoc-theme" / "default") in
-  let cmd =
+  let theme_dir = Odig.theme_dir () in
+  run_quiet Cmd.(v "mkdir" % p Fpath.(docu_dir / "_odoc-theme")) ;
+  run_quiet
     Cmd.(
       v "cp"
-      % p Fpath.(theme_dir / "highlight.pack.js")
       % p Fpath.(theme_dir / "odoc.css")
-      % p docu_dir)
-  in
-  OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore ;
+      % p Fpath.(docu_dir / "_odoc-theme")) ;
+  run_quiet
+    Cmd.(v "cp" % p Fpath.(theme_dir / "highlight.pack.js") % p docu_dir) ;
   Logs.info (fun m -> m "Done copying documentation.") ;
   Logs.info (fun m -> m "Creating index.") ;
   let db = create_db db_file in
-  populate_db include_dirs pkgs db docu_dir ;
+  populate_db conf include_dirs pkgs db docu_dir ;
   Logs.info (fun m -> m "Done creating index.") ;
   if compress then (
     Logs.info (fun m -> m "Compressing docset.") ;
