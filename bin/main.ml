@@ -33,7 +33,7 @@ module Odig = struct
 
   let htmldir c pkg = Fpath.(c.cachedir / "html" / pkg)
 
-  let cachedir c pkg = Fpath.(c.cachedir / "cache" / pkg)
+  let cachedir c pkg = Fpath.(c.cachedir / "odoc" / pkg)
 
   let all_pkgs () =
     let out =
