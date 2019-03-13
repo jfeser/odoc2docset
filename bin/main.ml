@@ -643,11 +643,14 @@ let main () compress output_path pkg_names =
     match pkg_names with
     | [] -> all_pkgs
     | names ->
-        List.filter names ~f:(fun n ->
-            if List.mem all_pkgs n ~equal:String.( = ) then true
-            else (
-              Logs.err (fun m -> m "Could not find package %s." n) ;
-              false ) )
+        let names =
+          List.filter names ~f:(fun n ->
+              if List.mem all_pkgs n ~equal:String.( = ) then true
+              else (
+                Logs.err (fun m -> m "Could not find package %s." n) ;
+                false ) )
+        in
+        if Logs.err_count () > 0 then Caml.exit 1 else names
   in
   let include_dirs =
     List.concat_map all_pkgs ~f:(fun pkg ->
