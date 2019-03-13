@@ -510,16 +510,26 @@ let load_unit env path =
   try
     let unit =
       Compilation_unit.load (Fs.File.of_string (Fpath.to_string path))
-      |> Xref.Lookup.lookup
     in
-    (* See comment in compile for explanation regarding the env duplication. *)
-    let resolve_env = Env.build env (`Unit unit) in
-    let resolved = Xref.resolve (Env.resolver resolve_env) unit in
-    let expand_env = Env.build env (`Unit resolved) in
-    Xref.expand (Env.expander expand_env) resolved
-    |> Xref.Lookup.lookup
-    |> Xref.resolve (Env.resolver expand_env)
-    |> Or_error.return
+    let will_segfault =
+      match unit.Model.Lang.Compilation_unit.id with
+      | `Root _ -> false
+      | _ ->
+          Logs.warn (fun m ->
+              m "Ignoring %a to avoid odoc segfault." Fpath.pp path ) ;
+          true
+    in
+    if will_segfault then Ok None
+    else
+      let unit = Xref.Lookup.lookup unit in
+      (* See comment in compile for explanation regarding the env duplication. *)
+      let resolve_env = Env.build env (`Unit unit) in
+      let resolved = Xref.resolve (Env.resolver resolve_env) unit in
+      let expand_env = Env.build env (`Unit resolved) in
+      Xref.expand (Env.expander expand_env) resolved
+      |> Xref.Lookup.lookup
+      |> Xref.resolve (Env.resolver expand_env)
+      |> Option.some |> Or_error.return
   with Caml.Not_found ->
     Error
       (Error.create "Failed to resolve." (Fpath.to_string path)
@@ -552,9 +562,10 @@ let populate_db conf include_dirs pkgs db docu_dir =
       |> List.iter ~f:(fun f ->
              Logs.debug (fun m -> m "Loading %s." (Fpath.to_string f)) ;
              match load_unit builder f with
-             | Ok unit ->
+             | Ok (Some unit) ->
                  let ids = ids_of_unit unit in
                  update_index db docu_dir ids
+             | Ok None -> ()
              | Error err -> Logs.err (fun m -> m "%s" (Error.to_string_hum err))
          ) )
 
