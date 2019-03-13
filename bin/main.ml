@@ -720,16 +720,3 @@ let cmd =
   , Term.info "odoc2docset" )
 
 let () = Term.(exit @@ eval cmd)
-
-(* let () =
- *   Logs.set_reporter (Logs.format_reporter ()) ;
- *   Logs.set_level (Some Logs.Debug) ;
- *   if Array.length Sys.argv < 2 then
- *     Stdio.print_endline "Usage: odoc2docset DOCSET PKG..."
- *   else
- *     let docset_dir = Sys.argv.(1) in
- *     let pkgs =
- *       Array.sub Sys.argv ~pos:2 ~len:(Array.length Sys.argv - 2)
- *       |> Array.to_list
- *     in
- *     main docset_dir pkgs *)
