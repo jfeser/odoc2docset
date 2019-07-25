@@ -10,6 +10,7 @@ maintainer: ["Jack Feser <feser@csail.mit.edu>"]
 authors: ["Jack Feser <feser@csail.mit.edu>"]
 bug-reports: "https://github.com/jfeser/odoc2docset/issues"
 homepage: "https://github.com/jfeser/odoc2docset"
+doc: "https://jfeser.github.io/odoc2docset/"
 license: "MIT"
 dev-repo: "git+https://github.com/jfeser/odoc2docset.git"
 synopsis: "Generates Dash docsets using Odoc"

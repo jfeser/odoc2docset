@@ -5,6 +5,7 @@
 (license MIT)
 (authors "Jack Feser <feser@csail.mit.edu>")
 (maintainers "Jack Feser <feser@csail.mit.edu>")
+(documentation https://jfeser.github.io/odoc2docset/)
 
 (package
   (name odoc2docset)
