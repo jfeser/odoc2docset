@@ -1,3 +1,7 @@
+## 1.3 (2019-07-25)
+
+ - Update to work with latest `odoc`.
+
 ## 1.2.1 (2018-12-14)
 
  - Automatically pin dependencies.
