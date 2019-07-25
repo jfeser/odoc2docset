@@ -1,1 +1,1 @@
-(ignored_subdirs (docsets))
+(data_only_dirs docsets)
