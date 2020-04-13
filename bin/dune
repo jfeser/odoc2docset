@@ -2,4 +2,5 @@
  (name main)
  (public_name odoc2docset)
  (libraries sqlite3 bos odoc.odoc odoc.model lambdasoup logs logs.fmt
-   logs.cli fmt.cli fmt.tty base stdio cmdliner))
+            logs.cli fmt.cli fmt.tty base stdio cmdliner)
+ (preprocess (pps ppx_let)))
