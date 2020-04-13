@@ -15,23 +15,12 @@ let ok_exn = function
       Logs.err (fun m -> m "%s" e);
       Caml.exit 1
 
+let opam_prefix = Sys.getenv_exn "OPAM_SWITCH_PREFIX" |> Fpath.of_string |> ok_exn
+
 module Odig = struct
-  type t = { cachedir : Fpath.t }
+  let htmldir pkg = Fpath.(opam_prefix / "var" / "cache" / "odig" / "html" / pkg)
 
-  let create () =
-    let out =
-      OS.Cmd.run_out Cmd.(v "odig" % "conf") |> OS.Cmd.to_string ~trim:true |> ok_exn
-    in
-    let cachedir =
-      String.split ~on:'\n' out |> List.hd_exn |> String.split ~on:':'
-      |> (fun l -> List.nth_exn l 1)
-      |> String.strip
-    in
-    { cachedir = Fpath.of_string cachedir |> ok_exn }
-
-  let htmldir c pkg = Fpath.(c.cachedir / "html" / pkg)
-
-  let cachedir c pkg = Fpath.(c.cachedir / "odoc" / pkg)
+  let cachedir pkg = Fpath.(opam_prefix / "var" / "cache" / "odig" / "odoc" / pkg)
 
   let all_pkgs () =
     let out =
@@ -346,23 +335,22 @@ let rec all_subdirs d =
     d :: (OS.Dir.contents d |> ok_exn |> List.concat_map ~f:all_subdirs)
   else []
 
-let populate_db conf include_dirs pkgs db docu_dir =
+let populate_db include_dirs pkgs db docu_dir =
   List.iter include_dirs ~f:(fun d ->
       Logs.debug (fun m -> m "Include dir: %s" (Odoc.Fs.Directory.to_string d)));
   let builder = Odoc.Env.create ~important_digests:true ~directories:include_dirs in
   List.iter pkgs ~f:(fun pkg ->
       Logs.info (fun m -> m "Indexing %s." pkg);
       insert db pkg "Package" (sprintf "%s/index.html" pkg);
-      let cachedir = Odig.cachedir conf pkg in
+      let cachedir = Odig.cachedir pkg in
       odoc_files_exn cachedir
       |> List.iter ~f:(fun f ->
              Logs.debug (fun m -> m "Loading %s." (Fpath.to_string f));
              match load_unit builder f with
-             | Ok (Some unit) ->
+             | Ok unit ->
                  let ids = ids_of_unit unit in
                  update_index db docu_dir ids
-             | Ok None -> ()
-             | Error err -> Logs.err (fun m -> m "%s" (Error.to_string_hum err))))
+             | Error (`Msg msg) -> Logs.err (fun m -> m "Resolve error: %s" msg)))
 
 let tarix_to_sqlite tarix_fn sqlite_fn =
   (* Create new sqlite db. *)
@@ -436,7 +424,6 @@ let run_quiet cmd = OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore
 
 let main () compress output_path pkg_names =
   (* Get Odig configuration. *)
-  let conf = Odig.create () in
   let all_pkgs = Odig.all_pkgs () in
   (* Look up all the selected packages. *)
   let pkgs =
@@ -453,7 +440,7 @@ let main () compress output_path pkg_names =
         if Logs.err_count () > 0 then Caml.exit 1 else names
   in
   let include_dirs =
-    List.concat_map all_pkgs ~f:(fun pkg -> all_subdirs (Odig.cachedir conf pkg))
+    List.concat_map all_pkgs ~f:(fun pkg -> all_subdirs (Odig.cachedir pkg))
     |> List.map ~f:(fun d -> Odoc.Fs.Directory.of_string (Fpath.to_string d))
   in
   (* Create the docset template. *)
@@ -467,20 +454,24 @@ let main () compress output_path pkg_names =
   Logs.info (fun m -> m "Copying documentation.");
   List.iter pkgs ~f:(fun pkg ->
       Logs.debug (fun m -> m "Copying %s." pkg);
-      let doc_dir = Odig.htmldir conf pkg in
+      let doc_dir = Odig.htmldir pkg in
       let cmd = Cmd.(v "cp" % "-r" % p doc_dir % p docu_dir) in
       OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore);
   (* Copy theme CSS & JS. *)
   let theme_dir = Odig.theme_dir () in
-  run_quiet Cmd.(v "mkdir" % p Fpath.(docu_dir / "_odoc-theme"));
+  run_quiet Cmd.(v "cp" % "-r" % p theme_dir % p Fpath.(docu_dir / "_odoc-theme"));
   run_quiet
     Cmd.(
-      v "cp" % p Fpath.(theme_dir / "odoc.css") % p Fpath.(docu_dir / "_odoc-theme"));
-  run_quiet Cmd.(v "cp" % p Fpath.(theme_dir / "highlight.pack.js") % p docu_dir);
+      v "cp"
+      % p
+          Fpath.(
+            opam_prefix / "share" / "odoc" / "odoc-theme" / "default"
+            / "highlight.pack.js")
+      % p docu_dir);
   Logs.info (fun m -> m "Done copying documentation.");
   Logs.info (fun m -> m "Creating index.");
   let db = create_db db_file in
-  populate_db conf include_dirs pkgs db docu_dir;
+  populate_db include_dirs pkgs db docu_dir;
   Logs.info (fun m -> m "Done creating index.");
   if compress then (
     Logs.info (fun m -> m "Compressing docset.");
