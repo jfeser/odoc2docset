@@ -23,6 +23,7 @@
     (lambdasoup (>= 0.6))
     (cmdliner (>= 1.0))
     (fmt (>= 0.8))
+    (bos (>= 0.2))
     ))
 
 (using fmt 1.1)
