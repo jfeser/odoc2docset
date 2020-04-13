@@ -18,7 +18,7 @@
     (base (>= v0.12))
     (stdio (>= v0.12))
     (odig (>= 0.0.4))
-    (odoc (>= 1.4))
+    (odoc (>= 1.5))
     (sqlite3 (>= 4.4))
     (lambdasoup (>= 0.6))
     (cmdliner (>= 1.0))
