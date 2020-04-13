@@ -1,3 +1,8 @@
+## 1.3.1 (2020-04-13)
+
+ - Add missing dependencies.
+ - Add flag to select Odig theme.
+
 ## 1.3 (2019-07-25)
 
  - Update to work with latest `odoc`.
