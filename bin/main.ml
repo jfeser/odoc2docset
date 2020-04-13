@@ -29,9 +29,7 @@ module Odig = struct
     in
     String.split ~on:'\n' out
 
-  let theme_dir () =
-    OS.Cmd.run_out Cmd.(v "odig" % "odoc-theme" % "path")
-    |> OS.Cmd.to_string ~trim:true |> ok_exn |> Fpath.of_string |> ok_exn
+  let theme_prefix = Fpath.(opam_prefix / "share" / "odig" / "odoc-theme")
 end
 
 module Sqlite3 = struct
@@ -422,9 +420,10 @@ let compress_docset docset_dir =
 
 let run_quiet cmd = OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore
 
-let main () compress output_path pkg_names =
+let main () compress theme output_path pkg_names =
   (* Get Odig configuration. *)
   let all_pkgs = Odig.all_pkgs () in
+
   (* Look up all the selected packages. *)
   let pkgs =
     match pkg_names with
@@ -443,13 +442,16 @@ let main () compress output_path pkg_names =
     List.concat_map all_pkgs ~f:(fun pkg -> all_subdirs (Odig.cachedir pkg))
     |> List.map ~f:(fun d -> Odoc.Fs.Directory.of_string (Fpath.to_string d))
   in
+
   (* Create the docset template. *)
   let docset_dir, docu_dir, db_file = create_template output_path in
+
   (* Generate documentation using Odoc. *)
   Logs.info (fun m -> m "Running odoc.");
   OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkgs) |> run_status ~quiet:true)
   |> ok_exn |> ignore;
   Logs.info (fun m -> m "Done running odoc.");
+
   (* Copy documentation. *)
   Logs.info (fun m -> m "Copying documentation.");
   List.iter pkgs ~f:(fun pkg ->
@@ -457,9 +459,14 @@ let main () compress output_path pkg_names =
       let doc_dir = Odig.htmldir pkg in
       let cmd = Cmd.(v "cp" % "-r" % p doc_dir % p docu_dir) in
       OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore);
+
   (* Copy theme CSS & JS. *)
-  let theme_dir = Odig.theme_dir () in
-  run_quiet Cmd.(v "cp" % "-r" % p theme_dir % p Fpath.(docu_dir / "_odoc-theme"));
+  let theme_path = Fpath.(Odig.theme_prefix / theme) in
+  if not (OS.Dir.exists theme_path |> ok_exn) then
+    Logs.err (fun m -> m "Theme %s does not exist." theme)
+  else
+    run_quiet Cmd.(v "cp" % "-r" % p theme_path % p Fpath.(docu_dir / "_odoc-theme"));
+
   run_quiet
     Cmd.(
       v "cp"
@@ -468,7 +475,9 @@ let main () compress output_path pkg_names =
             opam_prefix / "share" / "odoc" / "odoc-theme" / "default"
             / "highlight.pack.js")
       % p docu_dir);
+
   Logs.info (fun m -> m "Done copying documentation.");
+
   Logs.info (fun m -> m "Creating index.");
   let db = create_db db_file in
   populate_db include_dirs pkgs db docu_dir;
@@ -492,6 +501,10 @@ let cmd =
     let doc = "Generate a compressed docset." in
     Arg.(value & flag & info [ "c"; "compress" ] ~doc)
   in
+  let theme =
+    let doc = "Odig theme to use." in
+    Arg.(value & opt string "default" & info [ "t"; "theme" ] ~doc)
+  in
   let docset_dir =
     let doc =
       "Destination of the docset. If the docset already exists, it will be \
@@ -506,7 +519,7 @@ let cmd =
     in
     Arg.(value & pos_right 0 string [] & info [] ~docv:"PKG" ~doc)
   in
-  ( Term.(const main $ setup_log $ compressed $ docset_dir $ pkgs),
+  ( Term.(const main $ setup_log $ compressed $ theme $ docset_dir $ pkgs),
     Term.info "odoc2docset" )
 
 let () = Term.(exit @@ eval cmd)
