@@ -1,13 +1,12 @@
-open Base
-open Printf
-open Bos
+open Core
+open Shell
 open Cmdliner
-open Rresult
-open Stdio
 module Odoc = Odoc_odoc
 module Model = Odoc_model
 module Html = Odoc_html
-module Xref = Odoc_xref
+module Url = Odoc_document.Url
+
+let ( / ) = Filename.concat
 
 let ok_exn = function
   | Ok x -> x
@@ -15,21 +14,16 @@ let ok_exn = function
       Logs.err (fun m -> m "%s" e);
       Caml.exit 1
 
-let opam_prefix = Sys.getenv_exn "OPAM_SWITCH_PREFIX" |> Fpath.of_string |> ok_exn
+let opam_prefix = Sys.getenv_exn "OPAM_SWITCH_PREFIX"
 
 module Odig = struct
-  let htmldir pkg = Fpath.(opam_prefix / "var" / "cache" / "odig" / "html" / pkg)
+  let htmldir pkg = opam_prefix / "var/cache/odig/html" / pkg
 
-  let cachedir pkg = Fpath.(opam_prefix / "var" / "cache" / "odig" / "odoc" / pkg)
+  let cachedir pkg = opam_prefix / "var/cache/odig/odoc" / pkg
 
-  let all_pkgs () =
-    let out =
-      OS.Cmd.run_out Cmd.(v "odig" % "pkg" % "--short")
-      |> OS.Cmd.to_string ~trim:true |> ok_exn
-    in
-    String.split ~on:'\n' out
+  let all_pkgs () = run_lines "odig" [ "pkg"; "--short" ]
 
-  let theme_prefix = Fpath.(opam_prefix / "share" / "odig" / "odoc-theme")
+  let theme_prefix = opam_prefix / "share/odig/odoc-theme"
 end
 
 module Sqlite3 = struct
@@ -67,13 +61,9 @@ let insert db name typ path =
 
 let tar =
   (* Prefer GNU tar to BSD tar. *)
-  let tar_cmds = Cmd.[ v "gtar"; v "tar" ] in
-  List.find_exn tar_cmds ~f:(fun c -> OS.Cmd.exists c |> ok_exn)
+  run_first_line_exn "which" [ "gtar"; "tar" ]
 
-let opam_root =
-  Fpath.of_string (OS.Env.req_var "OPAM_SWITCH_PREFIX" |> ok_exn) |> ok_exn
-
-let etc = Fpath.(opam_root / "etc" / "odoc2docset")
+let etc = opam_prefix / "etc/odoc2docset"
 
 let plist pkg_name =
   sprintf
@@ -98,103 +88,113 @@ let plist pkg_name =
     |}
     pkg_name pkg_name pkg_name
 
-let id_to_string_full id =
-  let open Model.Paths_types.Identifier in
-  let open Model.Names in
-  let exception Not_printable in
-  let rec i2s = function
-    | `Root (_, x) -> UnitName.to_string x
-    | `Page (_, x) -> PageName.to_string x
-    | `CoreType x -> TypeName.to_string x
-    | `CoreException x -> ExceptionName.to_string x
-    | `Module (p, x) -> i2s (p :> any) ^ "." ^ ModuleName.to_string x
-    | `ModuleType (p, x) -> i2s (p :> any) ^ "." ^ ModuleTypeName.to_string x
-    | `Type (p, x) -> i2s (p :> any) ^ "." ^ TypeName.to_string x
-    | `Extension (p, x) -> i2s (p :> any) ^ "." ^ ExtensionName.to_string x
-    | `Exception (p, x) -> i2s (p :> any) ^ "." ^ ExceptionName.to_string x
-    | `Value (p, x) -> i2s (p :> any) ^ "." ^ ValueName.to_string x
-    | `Class (p, x) -> i2s (p :> any) ^ "." ^ ClassName.to_string x
-    | `ClassType (p, x) -> i2s (p :> any) ^ "." ^ ClassTypeName.to_string x
-    | `Method (p, x) -> i2s (p :> any) ^ "#" ^ MethodName.to_string x
-    | `InstanceVariable (p, x) ->
-        i2s (p :> any) ^ "#" ^ InstanceVariableName.to_string x
-    | `Constructor (p, x) -> (
-        match p with
-        | `Type (p, _) -> i2s (p :> any) ^ "." ^ ConstructorName.to_string x
-        | `CoreType _ -> ConstructorName.to_string x )
-    | `Field (p, x) -> (
-        match p with
-        | `Root _ | `Module _ | `ModuleType _ | `Argument _ | `Type _ | `CoreType _
-          ->
-            i2s (p :> any) ^ "." ^ FieldName.to_string x
-        | `Class _ | `ClassType _ -> i2s (p :> any) ^ "#" ^ FieldName.to_string x )
-    | `Label _ | `Argument _ -> raise Not_printable
-  in
-  try Some (i2s id) with Not_printable -> None
+(* let id_to_string_full id =
+ *   let open Model.Paths_types.Identifier in
+ *   let open Model.Names in
+ *   let exception Not_printable in
+ *   let rec i2s = function
+ *     | `Root (_, x) -> UnitName.to_string x
+ *     | `Page (_, x) -> PageName.to_string x
+ *     | `CoreType x -> TypeName.to_string x
+ *     | `CoreException x -> ExceptionName.to_string x
+ *     | `Module (p, x) -> i2s (p :> any) ^ "." ^ ModuleName.to_string x
+ *     | `ModuleType (p, x) -> i2s (p :> any) ^ "." ^ ModuleTypeName.to_string x
+ *     | `Type (p, x) -> i2s (p :> any) ^ "." ^ TypeName.to_string x
+ *     | `Extension (p, x) -> i2s (p :> any) ^ "." ^ ExtensionName.to_string x
+ *     | `Exception (p, x) -> i2s (p :> any) ^ "." ^ ExceptionName.to_string x
+ *     | `Value (p, x) -> i2s (p :> any) ^ "." ^ ValueName.to_string x
+ *     | `Class (p, x) -> i2s (p :> any) ^ "." ^ ClassName.to_string x
+ *     | `ClassType (p, x) -> i2s (p :> any) ^ "." ^ ClassTypeName.to_string x
+ *     | `Method (p, x) -> i2s (p :> any) ^ "#" ^ MethodName.to_string x
+ *     | `InstanceVariable (p, x) ->
+ *         i2s (p :> any) ^ "#" ^ InstanceVariableName.to_string x
+ *     | `Constructor (p, x) -> (
+ *         match p with
+ *         | `Type (p, _) -> i2s (p :> any) ^ "." ^ ConstructorName.to_string x
+ *         | `CoreType _ -> ConstructorName.to_string x )
+ *     | `Field (p, x) -> (
+ *         match p with
+ *         | `Root _ | `Module _ | `ModuleType _ | `Argument _ | `Type _ | `CoreType _
+ *           ->
+ *             i2s (p :> any) ^ "." ^ FieldName.to_string x
+ *         | `Class _ | `ClassType _ -> i2s (p :> any) ^ "#" ^ FieldName.to_string x )
+ *     | `Label _ | `Argument _ -> raise Not_printable
+ *   in
+ *   try Some (i2s id) with Not_printable -> None *)
+
+let id_to_string_full _ = failwith ""
 
 let id_to_string id = Some (Model.Paths.Identifier.name id)
 
-let id_kind (id : Model.Paths_types.Identifier.any) =
-  match id with
-  | `Type _ | `CoreType _ -> "Type"
-  | `InstanceVariable _ -> "Variable"
-  | `Module _ -> "Module"
-  | `ModuleType _ -> "Interface"
-  | `Method _ -> "Method"
-  | `Field _ -> "Field"
-  | `Label _ -> "Parameter"
-  | `Exception _ | `CoreException _ -> "Exception"
-  | `Class _ -> "Class"
-  | `Page _ -> "Section"
-  | `ClassType _ -> "Class"
-  | `Value _ -> "Value"
-  | `Argument _ -> "Parameter"
-  | `Constructor _ -> "Constructor"
-  | `Extension _ -> "Extension"
-  | `Root _ -> "Package"
+(* let id_kind (id : Model.Paths_types.Identifier.any) =
+ *   match id with
+ *   | `Type _ | `CoreType _ -> "Type"
+ *   | `InstanceVariable _ -> "Variable"
+ *   | `Module _ -> "Module"
+ *   | `ModuleType _ -> "Interface"
+ *   | `Method _ -> "Method"
+ *   | `Field _ -> "Field"
+ *   | `Label _ -> "Parameter"
+ *   | `Exception _ | `CoreException _ -> "Exception"
+ *   | `Class _ -> "Class"
+ *   | `Page _ -> "Section"
+ *   | `ClassType _ -> "Class"
+ *   | `Value _ -> "Value"
+ *   | `Argument _ -> "Parameter"
+ *   | `Constructor _ -> "Constructor"
+ *   | `Extension _ -> "Extension"
+ *   | `Root _ -> "Package" *)
 
-let is_hidden id =
-  Option.map (id_to_string_full id) ~f:(String.is_substring ~substring:"__")
-  |> Option.value ~default:true
+let id_kind _ = failwith ""
+
+(* let is_hidden id =
+ *   Option.map (id_to_string_full id) ~f:(String.is_substring ~substring:"__")
+ *   |> Option.value ~default:true *)
+
+let is_hidden _ = failwith ""
 
 (** Collect the identifiers (labeled with Dash types) in a compilation unit. *)
-let ids_of_unit unit =
-  let ids = ref [] in
-  let visitor =
-    object
-      inherit Model.Maps.types
 
-      inherit Model.Maps.identifier
+(* let ids_of_unit unit =
+ *   let ids = ref [] in
+ *   let visitor =
+ *     object
+ *       inherit Model.Maps.types
+ * 
+ *       inherit Model.Maps.identifier
+ * 
+ *       inherit Model.Maps.path
+ * 
+ *       inherit Model.Maps.fragment
+ * 
+ *       inherit Model.Maps.reference
+ * 
+ *       method! identifier x =
+ *         ids := x :: !ids;
+ *         x
+ * 
+ *       method! path x = x
+ * 
+ *       method! fragment x = x
+ * 
+ *       method! reference_any x = x
+ * 
+ *       method root x = x
+ *     end
+ *   in
+ *   visitor#unit unit |> ignore;
+ *   !ids *)
 
-      inherit Model.Maps.path
+let ids_of_unit _ = failwith ""
 
-      inherit Model.Maps.fragment
+(* let url_to_string Html.Url.{ page; anchor; _ } =
+ *   List.rev ("index.html" :: page) |> String.concat ~sep:"/" |> fun path ->
+ *   if String.(anchor = "") then path else path ^ "#" ^ anchor *)
 
-      inherit Model.Maps.reference
-
-      method! identifier x =
-        ids := x :: !ids;
-        x
-
-      method! path x = x
-
-      method! fragment x = x
-
-      method! reference_any x = x
-
-      method root x = x
-    end
-  in
-  visitor#unit unit |> ignore;
-  !ids
-
-let url_to_string Html.Url.{ page; anchor; _ } =
-  List.rev ("index.html" :: page) |> String.concat ~sep:"/" |> fun path ->
-  if String.(anchor = "") then path else path ^ "#" ^ anchor
+let url_to_string _ = failwith ""
 
 let update_index db docu_dir ids =
   let open Sqlite3 in
-  let open Html in
   let stmt =
     prepare db "INSERT OR IGNORE INTO searchIndex(name, type, path) VALUES (?,?,?);"
   in
@@ -209,7 +209,6 @@ let update_index db docu_dir ids =
   |> List.filter ~f:(fun (id, _, _) -> not (is_hidden id))
   (* Filter out the ids that don't have a URL. *)
   |> List.filter_map ~f:(fun (id, type_, id_str) ->
-         let open Html in
          match Url.from_identifier ~stop_before:false id with
          | Ok url -> Some (id, type_, id_str, url)
          | Error e ->
@@ -219,26 +218,23 @@ let update_index db docu_dir ids =
   (* Filter out the ids that don't have a corresponding documentation file. *)
   |> List.filter_map ~f:(fun (id, type_, id_str, url) ->
          let file =
-           let html_path =
-             List.rev ("index.html" :: url.Url.page)
-             |> String.concat ~sep:"/" |> Fpath.of_string |> ok_exn
-           in
-           Fpath.(docu_dir // html_path)
+           let html_path = Odoc_html.Link.href ~resolve:(Base "") url in
+           sprintf "%s/%s" docu_dir html_path
          in
-         if OS.File.exists file |> ok_exn then Some (id, type_, id_str, url, file)
-         else (
-           Logs.warn (fun m ->
-               m "Documentation file %a does not exist." Fpath.pp file);
-           None ))
+         match Sys.file_exists file with
+         | `Yes -> Some (id, type_, id_str, url, file)
+         | `No | `Unknown ->
+             Logs.warn (fun m -> m "Documentation file %s does not exist." file);
+             None)
   (* Filter out the ids that have an anchor that does not exist in the
      documentation file. *)
   |> List.filter_map ~f:(fun (id, type_, id_str, url, file) ->
          let url =
-           if String.(url.Url.anchor = "") then Some url
+           if String.(url.Url.Anchor.anchor = "") then Some url
            else
              let soup =
                Hashtbl.find_or_add soups file ~default:(fun () ->
-                   OS.File.read file |> ok_exn |> Soup.parse)
+                   In_channel.read_all file |> Soup.parse)
              in
              let name_ = Model.Paths.Identifier.name id in
              let new_anchor = sprintf "//apple_ref/cpp/%s/%s" type_ name_ in
@@ -252,8 +248,7 @@ let update_index db docu_dir ids =
                  Some { url with anchor = new_anchor }
              | None ->
                  Logs.warn (fun m ->
-                     m "Could not find anchor node for %s in %s." url.anchor
-                       (Fpath.to_string file));
+                     m "Could not find anchor node for %s in %s." url.anchor file);
                  None
          in
          Option.map url ~f:(fun url -> (type_, id_str, url)))
@@ -269,30 +264,24 @@ let update_index db docu_dir ids =
          reset stmt |> Rc.ok_exn);
   exec db "END TRANSACTION;" |> Rc.ok_exn;
   Hashtbl.iteri soups ~f:(fun ~key:file ~data:soup ->
-      OS.File.write file (Soup.to_string soup) |> ok_exn)
+      Out_channel.write_all file ~data:(Soup.to_string soup))
 
-let create_template output_path =
-  let docset_dir = Fpath.of_string output_path |> ok_exn in
-  let docset_name = Fpath.(rem_ext docset_dir |> basename) in
-  let res_dir = Fpath.(docset_dir / "Contents" / "Resources") in
-  let docu_dir = Fpath.(res_dir / "Documents") in
-  let db_file = Fpath.(res_dir / "docSet.dsidx") in
-  OS.Cmd.run Cmd.(v "rm" % "-rf" % p docset_dir) |> ok_exn;
-  OS.Dir.create docu_dir |> ok_exn |> ignore;
-  OS.File.write Fpath.(docset_dir / "Contents" / "Info.plist") (plist docset_name)
-  |> ok_exn;
-  OS.Cmd.(
-    run_status ~quiet:true
-      Cmd.(
-        v "cp"
-        % Fpath.(etc / "icon.png" |> to_string)
-        % Fpath.(docset_dir / "icon.png" |> to_string)))
-  |> ok_exn |> ignore;
-  OS.Path.delete db_file |> ok_exn;
-  (docset_dir, docu_dir, db_file)
+let create_template docset_dir =
+  let open Filename in
+  let docset_name = chop_extension docset_dir |> basename in
+  let resource_dir = docset_dir / "Contents" / "Resources" in
+  let documents_dir = resource_dir / "Documents" in
+  let db_file = resource_dir / "docSet.dsidx" in
+  run "rm" [ "-rf"; docset_dir ];
+  mkdir ~p:() documents_dir;
+  Out_channel.write_all
+    (docset_dir / "Contents" / "Info.plist")
+    ~data:(plist docset_name);
+  cp (etc / "icon.png") (docset_dir / "icon.png");
+  (docset_dir, documents_dir, db_file)
 
 let create_db db_file =
-  let db = Sqlite3.db_open (Fpath.to_string db_file) in
+  let db = Sqlite3.db_open db_file in
   Sqlite3.exec db
     "CREATE TABLE searchIndex(id INTEGER PRIMARY KEY, name TEXT, type TEXT, path \
      TEXT);"
@@ -301,37 +290,31 @@ let create_db db_file =
   |> Sqlite3.Rc.ok_exn;
   db
 
-(** Load a compilation unit, resolve and expand it. Taken straight from
-   odoc/src/html_page.ml. *)
-let load_unit env path =
-  let open Result.Let_syntax in
-  let open Odoc in
-  let%bind unit = Compilation_unit.load (Fs.File.of_string (Fpath.to_string path)) in
-  let%bind () =
-    match unit.Model.Lang.Compilation_unit.id with
-    | `Root _ -> return ()
-    | _ -> Error (`Msg (Fmt.str "Ignoring %a to avoid odoc segfault." Fpath.pp path))
-  in
-  let unit = Xref.Lookup.lookup unit in
-  (* See comment in compile for explanation regarding the env duplication. *)
-  let resolve_env = Env.build env (`Unit unit) in
-  let%bind resolved = Odoc_xref.resolve (Env.resolver resolve_env) unit in
-  let expand_env = Env.build env (`Unit resolved) in
-  let%bind expanded = Odoc_xref.expand (Env.expander expand_env) resolved in
-  (* Yes, again. *)
-  Odoc_xref.Lookup.lookup expanded |> Odoc_xref.resolve (Env.resolver expand_env)
+(* (\** Load a compilation unit, resolve and expand it. Taken straight from
+ *    odoc/src/html_page.ml. *\)
+ * let load_unit env path =
+ *   let open Result.Let_syntax in
+ *   let open Odoc in
+ *   let%bind unit = Compilation_unit.load (Fs.File.of_string (Fpath.to_string path)) in
+ *   let%bind () =
+ *     match unit.Model.Lang.Compilation_unit.id with
+ *     | `Root _ -> return ()
+ *     | _ -> Error (`Msg (Fmt.str "Ignoring %a to avoid odoc segfault." Fpath.pp path))
+ *   in
+ *   let unit = Xref.Lookup.lookup unit in
+ *   (\* See comment in compile for explanation regarding the env duplication. *\)
+ *   let resolve_env = Env.build env (`Unit unit) in
+ *   let%bind resolved = Odoc_xref.resolve (Env.resolver resolve_env) unit in
+ *   let expand_env = Env.build env (`Unit resolved) in
+ *   let%bind expanded = Odoc_xref.expand (Env.expander expand_env) resolved in
+ *   (\* Yes, again. *\)
+ *   Odoc_xref.Lookup.lookup expanded |> Odoc_xref.resolve (Env.resolver expand_env) *)
 
-let rec odoc_files_exn d =
-  OS.Dir.contents d |> ok_exn
-  |> List.concat_map ~f:(fun f ->
-         if OS.Dir.exists f |> ok_exn then odoc_files_exn f
-         else if Fpath.has_ext "odoc" f then [ f ]
-         else [])
+let load_unit _ _ = failwith ""
 
-let rec all_subdirs d =
-  if OS.Dir.exists d |> ok_exn then
-    d :: (OS.Dir.contents d |> ok_exn |> List.concat_map ~f:all_subdirs)
-  else []
+let odoc_files_exn d = run_lines "find" [ d; "-type"; "f"; "-name"; "*.odoc" ]
+
+let all_subdirs d = run_lines "find" [ d; "-type"; "d" ]
 
 let populate_db include_dirs pkgs db docu_dir =
   List.iter include_dirs ~f:(fun d ->
@@ -343,7 +326,7 @@ let populate_db include_dirs pkgs db docu_dir =
       let cachedir = Odig.cachedir pkg in
       odoc_files_exn cachedir
       |> List.iter ~f:(fun f ->
-             Logs.debug (fun m -> m "Loading %s." (Fpath.to_string f));
+             Logs.debug (fun m -> m "Loading %s." f);
              match load_unit builder f with
              | Ok unit ->
                  let ids = ids_of_unit unit in
@@ -351,23 +334,24 @@ let populate_db include_dirs pkgs db docu_dir =
              | Error (`Msg msg) -> Logs.err (fun m -> m "Resolve error: %s" msg)))
 
 let tarix_to_sqlite tarix_fn sqlite_fn =
+  let module Sql = Sqlite3 in
   (* Create new sqlite db. *)
-  let db = Sqlite3.db_open (Fpath.to_string sqlite_fn) in
-  Sqlite3.exec db
+  let db = Sql.db_open sqlite_fn in
+  Sql.exec db
     "CREATE TABLE tarindex(path TEXT PRIMARY KEY COLLATE NOCASE, hash TEXT);\n\
      CREATE TABLE toextract(path TEXT PRIMARY KEY COLLATE NOCASE, hash TEXT);\n"
-  |> Sqlite3.Rc.ok_exn;
+  |> Sql.Rc.ok_exn;
   let insert_stmt =
-    Sqlite3.prepare db "INSERT OR IGNORE INTO tarindex(path, hash) VALUES (?,?);"
+    Sql.prepare db "INSERT OR IGNORE INTO tarindex(path, hash) VALUES (?,?);"
   in
-  Sqlite3.(exec db "BEGIN TRANSACTION;" |> Rc.ok_exn);
-  In_channel.with_file (Fpath.to_string tarix_fn) ~f:(fun ch ->
+  Sql.(exec db "BEGIN TRANSACTION;" |> Rc.ok_exn);
+  In_channel.with_file tarix_fn ~f:(fun ch ->
       In_channel.fold_lines ch ~init:0 ~f:(fun lnum line ->
           ( if lnum > 0 then
             match String.split line ~on:' ' with
             | [ kind; off1; off2; len; fn ] ->
                 if String.(kind = "0") then (
-                  Sqlite3.(
+                  Sql.(
                     bind insert_stmt 1 (TEXT fn) |> Rc.ok_exn;
                     bind insert_stmt 2
                       (TEXT (String.concat ~sep:" " [ off1; off2; len ]))
@@ -377,48 +361,39 @@ let tarix_to_sqlite tarix_fn sqlite_fn =
             | _ -> Logs.warn (fun m -> m "Unexpected line in tarix file: %s" line) );
           lnum + 1)
       |> ignore);
-  Sqlite3.(exec db "END TRANSACTION;" |> Rc.ok_exn)
+  Sql.(exec db "END TRANSACTION;" |> Rc.ok_exn)
 
 let compress_docset docset_dir =
-  let temp_tgz = Caml.Filename.temp_file "tarix" ".tgz" in
-  let temp_idx = Caml.Filename.temp_file "tarixIndex" ".dbtxt" in
-  let temp_db = Caml.Filename.temp_file "docSet" ".dsidx" in
-  let db_file = Fpath.(docset_dir / "Contents" / "Resources" / "docSet.dsidx") in
+  let temp_tgz = Caml.Filename.temp_file "tarix" ".tgz"
+  and temp_idx = Caml.Filename.temp_file "tarixIndex" ".dbtxt"
+  and temp_db = Caml.Filename.temp_file "docSet" ".dsidx"
+  and db_file = docset_dir / "Contents/Resources/docSet.dsidx" in
   (* Copy out the docset index. *)
-  OS.Cmd.run Cmd.(v "cp" % p db_file % temp_db) |> ok_exn;
-  (* Use tarix to compress the entire docset. *)
-  OS.Env.set_var "TARIX" (Some (sprintf "-z -9 -f %s" temp_idx)) |> ok_exn;
+  cp db_file temp_db;
   (* Convert the tarix index to a sqlite index. *)
-  let docset_base, docset_rel = Fpath.split_base docset_dir in
-  OS.Cmd.run
-    Cmd.(
-      tar % "-c" % "-f" % temp_tgz % "--use-compress-program" % "tarix" % "-C"
-      % p docset_base % p docset_rel)
-  |> ok_exn;
+  let docset_base, docset_rel = Filename.split docset_dir in
+  let tarix_args = sprintf "-z -9 -f %s" temp_idx in
+  run
+    ~env:(`Extend [ ("TARIX", tarix_args) ])
+    "tar"
+    [
+      "-cf";
+      temp_tgz;
+      "--use-compress-program";
+      "tarix";
+      "-C";
+      docset_base;
+      docset_rel;
+    ];
   (* Create a new docset template. *)
-  OS.Cmd.run Cmd.(v "rm" % "-rf" % p docset_dir) |> ok_exn;
-  let _ = create_template (Fpath.to_string docset_dir) in
+  rm ~r:() ~f:() docset_dir;
+  (create_template docset_dir : string * string * string) |> ignore;
   (* Generate a sqlite based tar index. *)
-  tarix_to_sqlite
-    (Fpath.of_string temp_idx |> ok_exn)
-    Fpath.(docset_dir / "Contents" / "Resources" / "tarixIndex.db");
+  tarix_to_sqlite temp_idx (docset_dir / "Contents/Resources/tarixIndex.db");
   (* Copy the docset index and compressed docset back in. *)
-  OS.Cmd.run
-    Cmd.(
-      v "rm" % "-rf" % p Fpath.(docset_dir / "Contents" / "Resources" / "Documents"))
-  |> ok_exn;
-  OS.Cmd.run
-    Cmd.(
-      v "cp" % temp_tgz
-      % p Fpath.(docset_dir / "Contents" / "Resources" / "tarix.tgz"))
-  |> ok_exn;
-  OS.Cmd.run
-    Cmd.(
-      v "cp" % temp_db
-      % p Fpath.(docset_dir / "Contents" / "Resources" / "docSet.dsidx"))
-  |> ok_exn
-
-let run_quiet cmd = OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore
+  rm ~r:() ~f:() (docset_dir / "Contents/Resources/Documents");
+  cp temp_tgz (docset_dir / "Contents/Resources/tarix.tgz");
+  cp temp_db (docset_dir / "Contents/Resources/docSet.dsidx")
 
 let main () compress theme output_path pkg_names =
   (* Get Odig configuration. *)
@@ -440,7 +415,7 @@ let main () compress theme output_path pkg_names =
   in
   let include_dirs =
     List.concat_map all_pkgs ~f:(fun pkg -> all_subdirs (Odig.cachedir pkg))
-    |> List.map ~f:(fun d -> Odoc.Fs.Directory.of_string (Fpath.to_string d))
+    |> List.map ~f:Odoc.Fs.Directory.of_string
   in
 
   (* Create the docset template. *)
@@ -448,33 +423,19 @@ let main () compress theme output_path pkg_names =
 
   (* Generate documentation using Odoc. *)
   Logs.info (fun m -> m "Running odoc.");
-  OS.Cmd.(Cmd.(v "odig" % "odoc" %% of_list pkgs) |> run_status ~quiet:true)
-  |> ok_exn |> ignore;
+  run "odig" ("odoc" :: pkgs);
   Logs.info (fun m -> m "Done running odoc.");
 
   (* Copy documentation. *)
   Logs.info (fun m -> m "Copying documentation.");
   List.iter pkgs ~f:(fun pkg ->
       Logs.debug (fun m -> m "Copying %s." pkg);
-      let doc_dir = Odig.htmldir pkg in
-      let cmd = Cmd.(v "cp" % "-r" % p doc_dir % p docu_dir) in
-      OS.Cmd.run_status ~quiet:true cmd |> ok_exn |> ignore);
+      run "cp" [ "-r"; Odig.htmldir pkg; docu_dir ]);
 
   (* Copy theme CSS & JS. *)
-  let theme_path = Fpath.(Odig.theme_prefix / theme) in
-  if not (OS.Dir.exists theme_path |> ok_exn) then
-    Logs.err (fun m -> m "Theme %s does not exist." theme)
-  else
-    run_quiet Cmd.(v "cp" % "-r" % p theme_path % p Fpath.(docu_dir / "_odoc-theme"));
-
-  run_quiet
-    Cmd.(
-      v "cp"
-      % p
-          Fpath.(
-            opam_prefix / "share" / "odoc" / "odoc-theme" / "default"
-            / "highlight.pack.js")
-      % p docu_dir);
+  run "cp"
+    [ "-rf"; Odig.theme_prefix / theme; Filename.concat docu_dir "_odoc-theme" ];
+  cp (opam_prefix / "share/odoc/odoc-them/default/highlight.pack.js") docu_dir;
 
   Logs.info (fun m -> m "Done copying documentation.");
 
