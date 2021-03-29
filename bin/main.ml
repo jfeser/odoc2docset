@@ -8,6 +8,16 @@ module Url = Odoc_document.Url
 
 let ( / ) = Filename.concat
 
+let run_warn cmd args =
+  try run cmd args
+  with Process.Failed r -> Logs.warn (fun m -> m "%s" @@ Process.format_failed r)
+
+let run_lines_warn cmd args =
+  try run_lines cmd args
+  with Process.Failed r ->
+    Logs.warn (fun m -> m "%s" @@ Process.format_failed r);
+    []
+
 let ok_exn = function
   | Ok x -> x
   | Error (`Msg e) ->
@@ -19,7 +29,7 @@ let opam_prefix = Sys.getenv_exn "OPAM_SWITCH_PREFIX"
 module Odig = struct
   let htmldir pkg = opam_prefix / "var/cache/odig/html" / pkg
 
-  let cachedir pkg = opam_prefix / "var/cache/odig/odoc" / pkg
+  let cachedir = opam_prefix / "var/cache/odig/odoc"
 
   let all_pkgs () = run_lines "odig" [ "pkg"; "--short" ]
 
@@ -88,110 +98,77 @@ let plist pkg_name =
     |}
     pkg_name pkg_name pkg_name
 
-(* let id_to_string_full id =
- *   let open Model.Paths_types.Identifier in
- *   let open Model.Names in
- *   let exception Not_printable in
- *   let rec i2s = function
- *     | `Root (_, x) -> UnitName.to_string x
- *     | `Page (_, x) -> PageName.to_string x
- *     | `CoreType x -> TypeName.to_string x
- *     | `CoreException x -> ExceptionName.to_string x
- *     | `Module (p, x) -> i2s (p :> any) ^ "." ^ ModuleName.to_string x
- *     | `ModuleType (p, x) -> i2s (p :> any) ^ "." ^ ModuleTypeName.to_string x
- *     | `Type (p, x) -> i2s (p :> any) ^ "." ^ TypeName.to_string x
- *     | `Extension (p, x) -> i2s (p :> any) ^ "." ^ ExtensionName.to_string x
- *     | `Exception (p, x) -> i2s (p :> any) ^ "." ^ ExceptionName.to_string x
- *     | `Value (p, x) -> i2s (p :> any) ^ "." ^ ValueName.to_string x
- *     | `Class (p, x) -> i2s (p :> any) ^ "." ^ ClassName.to_string x
- *     | `ClassType (p, x) -> i2s (p :> any) ^ "." ^ ClassTypeName.to_string x
- *     | `Method (p, x) -> i2s (p :> any) ^ "#" ^ MethodName.to_string x
- *     | `InstanceVariable (p, x) ->
- *         i2s (p :> any) ^ "#" ^ InstanceVariableName.to_string x
- *     | `Constructor (p, x) -> (
- *         match p with
- *         | `Type (p, _) -> i2s (p :> any) ^ "." ^ ConstructorName.to_string x
- *         | `CoreType _ -> ConstructorName.to_string x )
- *     | `Field (p, x) -> (
- *         match p with
- *         | `Root _ | `Module _ | `ModuleType _ | `Argument _ | `Type _ | `CoreType _
- *           ->
- *             i2s (p :> any) ^ "." ^ FieldName.to_string x
- *         | `Class _ | `ClassType _ -> i2s (p :> any) ^ "#" ^ FieldName.to_string x )
- *     | `Label _ | `Argument _ -> raise Not_printable
- *   in
- *   try Some (i2s id) with Not_printable -> None *)
+let id_to_string id =
+  let open Odoc_model in
+  let open Paths.Identifier in
+  let open Names in
+  let exception Not_printable in
+  let rec i2s : Paths.Identifier.t -> _ = function
+    | `Root _ | `Page _ | `RootPage _ | `LeafPage _ | `Parameter _ | `Result _ -> ""
+    | `CoreType x ->
+        if TypeName.is_hidden x then raise Not_printable else TypeName.to_string x
+    | `CoreException x -> ExceptionName.to_string x
+    | `Module (p, x) ->
+        if ModuleName.is_hidden x then raise Not_printable
+        else i2s (p :> t) ^ "." ^ ModuleName.to_string x
+    | `ModuleType (p, x) ->
+        if ModuleTypeName.is_hidden x then raise Not_printable
+        else i2s (p :> t) ^ "." ^ ModuleTypeName.to_string x
+    | `Type (p, x) ->
+        if TypeName.is_hidden x then raise Not_printable
+        else i2s (p :> t) ^ "." ^ TypeName.to_string x
+    | `Extension (p, x) -> i2s (p :> t) ^ "." ^ ExtensionName.to_string x
+    | `Exception (p, x) -> i2s (p :> t) ^ "." ^ ExceptionName.to_string x
+    | `Value (p, x) ->
+        if ValueName.is_hidden x then raise Not_printable
+        else i2s (p :> t) ^ "." ^ ValueName.to_string x
+    | `Class (p, x) ->
+        if ClassName.is_hidden x then raise Not_printable
+        else i2s (p :> t) ^ "." ^ ClassName.to_string x
+    | `ClassType (p, x) ->
+        if ClassTypeName.is_hidden x then raise Not_printable
+        else i2s (p :> t) ^ "." ^ ClassTypeName.to_string x
+    | `Method (p, x) -> i2s (p :> t) ^ "#" ^ MethodName.to_string x
+    | `InstanceVariable (p, x) ->
+        i2s (p :> t) ^ "#" ^ InstanceVariableName.to_string x
+    | `Constructor (p, x) -> (
+        match p with
+        | `Type (p, _) -> i2s (p :> t) ^ "." ^ ConstructorName.to_string x
+        | `CoreType _ -> ConstructorName.to_string x )
+    | `Field (p, x) -> (
+        match p with
+        | `Root _ | `Module _ | `ModuleType _ | `Type _ | `CoreType _ | `Parameter _
+        | `Result _ ->
+            i2s (p :> t) ^ "." ^ FieldName.to_string x
+        | `Class _ | `ClassType _ -> i2s (p :> t) ^ "#" ^ FieldName.to_string x )
+    | `Label _ -> raise Not_printable
+  in
+  try Some (i2s id) with Not_printable -> None
 
-let id_to_string_full _ = failwith ""
+let id_kind (id : Odoc_model.Paths.Identifier.t) =
+  match id with
+  | `Type _ | `CoreType _ -> "Type"
+  | `InstanceVariable _ -> "Variable"
+  | `Parameter _ | `Result _ | `Module _ -> "Module"
+  | `ModuleType _ -> "Interface"
+  | `Method _ -> "Method"
+  | `Field _ -> "Field"
+  | `Label _ -> "Parameter"
+  | `Exception _ | `CoreException _ -> "Exception"
+  | `Class _ -> "Class"
+  | `RootPage _ | `Page _ | `LeafPage _ -> "Section"
+  | `ClassType _ -> "Class"
+  | `Value _ -> "Value"
+  | `Constructor _ -> "Constructor"
+  | `Extension _ -> "Extension"
+  | `Root _ -> "Package"
 
-let id_to_string id = Some (Model.Paths.Identifier.name id)
-
-(* let id_kind (id : Model.Paths_types.Identifier.any) =
- *   match id with
- *   | `Type _ | `CoreType _ -> "Type"
- *   | `InstanceVariable _ -> "Variable"
- *   | `Module _ -> "Module"
- *   | `ModuleType _ -> "Interface"
- *   | `Method _ -> "Method"
- *   | `Field _ -> "Field"
- *   | `Label _ -> "Parameter"
- *   | `Exception _ | `CoreException _ -> "Exception"
- *   | `Class _ -> "Class"
- *   | `Page _ -> "Section"
- *   | `ClassType _ -> "Class"
- *   | `Value _ -> "Value"
- *   | `Argument _ -> "Parameter"
- *   | `Constructor _ -> "Constructor"
- *   | `Extension _ -> "Extension"
- *   | `Root _ -> "Package" *)
-
-let id_kind _ = failwith ""
-
-(* let is_hidden id =
- *   Option.map (id_to_string_full id) ~f:(String.is_substring ~substring:"__")
- *   |> Option.value ~default:true *)
-
-let is_hidden _ = failwith ""
+let is_hidden id =
+  Option.map (id_to_string id) ~f:(String.is_substring ~substring:"__")
+  |> Option.value ~default:true
 
 (** Collect the identifiers (labeled with Dash types) in a compilation unit. *)
-
-(* let ids_of_unit unit =
- *   let ids = ref [] in
- *   let visitor =
- *     object
- *       inherit Model.Maps.types
- * 
- *       inherit Model.Maps.identifier
- * 
- *       inherit Model.Maps.path
- * 
- *       inherit Model.Maps.fragment
- * 
- *       inherit Model.Maps.reference
- * 
- *       method! identifier x =
- *         ids := x :: !ids;
- *         x
- * 
- *       method! path x = x
- * 
- *       method! fragment x = x
- * 
- *       method! reference_any x = x
- * 
- *       method root x = x
- *     end
- *   in
- *   visitor#unit unit |> ignore;
- *   !ids *)
-
-let ids_of_unit _ = failwith ""
-
-(* let url_to_string Html.Url.{ page; anchor; _ } =
- *   List.rev ("index.html" :: page) |> String.concat ~sep:"/" |> fun path ->
- *   if String.(anchor = "") then path else path ^ "#" ^ anchor *)
-
-let url_to_string _ = failwith ""
+let ids_of_unit = Ids.compilation_unit
 
 let update_index db docu_dir ids =
   let open Sqlite3 in
@@ -202,7 +179,7 @@ let update_index db docu_dir ids =
   let soups = Hashtbl.Poly.create () in
   (* Filter out the ids that don't have a string representation. *)
   List.filter_map ids ~f:(fun id ->
-      match id_to_string_full id with
+      match id_to_string id with
       | Some id_str -> Some (id, id_kind id, id_str)
       | None -> None)
   (* Filter out hidden ids. *)
@@ -218,7 +195,9 @@ let update_index db docu_dir ids =
   (* Filter out the ids that don't have a corresponding documentation file. *)
   |> List.filter_map ~f:(fun (id, type_, id_str, url) ->
          let file =
-           let html_path = Odoc_html.Link.href ~resolve:(Base "") url in
+           let html_path =
+             Odoc_html.Link.href ~resolve:(Base "") { url with anchor = "" }
+           in
            sprintf "%s/%s" docu_dir html_path
          in
          match Sys.file_exists file with
@@ -254,7 +233,7 @@ let update_index db docu_dir ids =
          Option.map url ~f:(fun url -> (type_, id_str, url)))
   (* Insert ids into the database. *)
   |> List.iter ~f:(fun (type_, id_str, url) ->
-         let url_str = url_to_string url in
+         let url_str = Odoc_html.Link.href ~resolve:(Base "") url in
          Logs.debug (fun m -> m "Inserting %s %s %s" id_str type_ url_str);
          let open Data in
          bind stmt 1 (TEXT id_str) |> Rc.ok_exn;
@@ -277,7 +256,7 @@ let create_template docset_dir =
   Out_channel.write_all
     (docset_dir / "Contents" / "Info.plist")
     ~data:(plist docset_name);
-  cp (etc / "icon.png") (docset_dir / "icon.png");
+  run_warn "cp" [ etc / "icon.png"; docset_dir / "icon.png" ];
   (docset_dir, documents_dir, db_file)
 
 let create_db db_file =
@@ -290,48 +269,64 @@ let create_db db_file =
   |> Sqlite3.Rc.ok_exn;
   db
 
-(* (\** Load a compilation unit, resolve and expand it. Taken straight from
- *    odoc/src/html_page.ml. *\)
- * let load_unit env path =
- *   let open Result.Let_syntax in
- *   let open Odoc in
- *   let%bind unit = Compilation_unit.load (Fs.File.of_string (Fpath.to_string path)) in
- *   let%bind () =
- *     match unit.Model.Lang.Compilation_unit.id with
- *     | `Root _ -> return ()
- *     | _ -> Error (`Msg (Fmt.str "Ignoring %a to avoid odoc segfault." Fpath.pp path))
- *   in
- *   let unit = Xref.Lookup.lookup unit in
- *   (\* See comment in compile for explanation regarding the env duplication. *\)
- *   let resolve_env = Env.build env (`Unit unit) in
- *   let%bind resolved = Odoc_xref.resolve (Env.resolver resolve_env) unit in
- *   let expand_env = Env.build env (`Unit resolved) in
- *   let%bind expanded = Odoc_xref.expand (Env.expander expand_env) resolved in
- *   (\* Yes, again. *\)
- *   Odoc_xref.Lookup.lookup expanded |> Odoc_xref.resolve (Env.resolver expand_env) *)
+(** Load a compilation unit, resolve and expand it. Taken straight from
+   odoc/src/html_page.ml. *)
+let load_unit env path =
+  let open Result.Let_syntax in
+  let open Odoc in
+  let%bind unit = Compilation_unit.load (Fs.File.of_string path) in
+  let env = Env.build env (`Unit unit) in
+  Odoc_xref2.Link.link env unit
+  |> Odoc_xref2.Lookup_failures.handle_failures ~warn_error:true ~filename:path
 
-let load_unit _ _ = failwith ""
+let load env input =
+  let open Odoc in
+  let open Or_error in
+  Root.read input >>= fun root ->
+  let input_s = Fs.File.to_string input in
+  match root.file with
+  | Page _ -> Ok None
+  | Compilation_unit { hidden; _ } ->
+      if hidden then Ok None
+      else
+        Compilation_unit.load input >>= fun unit ->
+        let env = Env.build env (`Unit unit) in
+        let linked = Odoc_xref2.Link.link env unit in
+        linked
+        |> Odoc_xref2.Lookup_failures.handle_failures ~warn_error:false
+             ~filename:input_s
+        >>= fun odoctree ->
+        Odoc_xref2.Tools.reset_caches ();
+        Caml.Hashtbl.clear Compilation_unit.units_cache;
+        Ok (Some odoctree)
 
 let odoc_files_exn d = run_lines "find" [ d; "-type"; "f"; "-name"; "*.odoc" ]
 
-let all_subdirs d = run_lines "find" [ d; "-type"; "d" ]
+let all_subdirs d = run_lines_warn "find" [ d; "-type"; "d" ]
 
 let populate_db include_dirs pkgs db docu_dir =
   List.iter include_dirs ~f:(fun d ->
       Logs.debug (fun m -> m "Include dir: %s" (Odoc.Fs.Directory.to_string d)));
-  let builder = Odoc.Env.create ~important_digests:true ~directories:include_dirs in
+
+  let env =
+    Odoc.Env.create ~important_digests:true ~directories:include_dirs
+      ~open_modules:[]
+  in
   List.iter pkgs ~f:(fun pkg ->
       Logs.info (fun m -> m "Indexing %s." pkg);
+
       insert db pkg "Package" (sprintf "%s/index.html" pkg);
-      let cachedir = Odig.cachedir pkg in
-      odoc_files_exn cachedir
-      |> List.iter ~f:(fun f ->
-             Logs.debug (fun m -> m "Loading %s." f);
-             match load_unit builder f with
-             | Ok unit ->
-                 let ids = ids_of_unit unit in
-                 update_index db docu_dir ids
-             | Error (`Msg msg) -> Logs.err (fun m -> m "Resolve error: %s" msg)))
+
+      List.iter
+        (odoc_files_exn (Odig.cachedir / pkg))
+        ~f:(fun f ->
+          Logs.debug (fun m -> m "Loading %s." f);
+          match load env @@ Odoc.Fs.File.of_string f with
+          | Ok (Some unit) ->
+              let ids = ids_of_unit unit in
+              update_index db docu_dir ids
+          | Ok None -> ()
+          | Error (`Msg msg) -> Logs.err (fun m -> m "Resolve error: %s" msg)))
 
 let tarix_to_sqlite tarix_fn sqlite_fn =
   let module Sql = Sqlite3 in
@@ -413,10 +408,6 @@ let main () compress theme output_path pkg_names =
         in
         if Logs.err_count () > 0 then Caml.exit 1 else names
   in
-  let include_dirs =
-    List.concat_map all_pkgs ~f:(fun pkg -> all_subdirs (Odig.cachedir pkg))
-    |> List.map ~f:Odoc.Fs.Directory.of_string
-  in
 
   (* Create the docset template. *)
   let docset_dir, docu_dir, db_file = create_template output_path in
@@ -435,12 +426,15 @@ let main () compress theme output_path pkg_names =
   (* Copy theme CSS & JS. *)
   run "cp"
     [ "-rf"; Odig.theme_prefix / theme; Filename.concat docu_dir "_odoc-theme" ];
-  cp (opam_prefix / "share/odoc/odoc-them/default/highlight.pack.js") docu_dir;
+  cp (opam_prefix / "share/odoc/odoc-theme/default/highlight.pack.js") docu_dir;
 
   Logs.info (fun m -> m "Done copying documentation.");
 
   Logs.info (fun m -> m "Creating index.");
   let db = create_db db_file in
+  let include_dirs =
+    all_subdirs Odig.cachedir |> List.map ~f:Odoc.Fs.Directory.of_string
+  in
   populate_db include_dirs pkgs db docu_dir;
   Logs.info (fun m -> m "Done creating index.");
   if compress then (
