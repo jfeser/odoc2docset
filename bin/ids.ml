@@ -40,13 +40,13 @@ and module_ (x : Module.t) =
   let ids =
     match x.type_ with
     | ModuleType x -> module_type_expr x
-    | Alias (_, Some exp) -> simple_expansion exp
+    | Alias (_, Some exp) -> simple_expansion exp.a_expansion
     | Alias (_, None) -> []
   in
   any x.id :: ids
 
 and simple_expansion = function
-  | ModuleType.Signature x -> signature x
+  | Signature x -> signature x
   | Functor (_, x) -> simple_expansion x
 
 and module_type (x : ModuleType.t) =

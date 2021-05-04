@@ -203,7 +203,7 @@ let update_index db docu_dir ids =
          match Sys.file_exists file with
          | `Yes -> Some (id, type_, id_str, url, file)
          | `No | `Unknown ->
-             Logs.warn (fun m -> m "Documentation file %s does not exist." file);
+             Logs.debug (fun m -> m "Documentation file %s does not exist." file);
              None)
   (* Filter out the ids that have an anchor that does not exist in the
      documentation file. *)
@@ -226,7 +226,7 @@ let update_index db docu_dir ids =
                  Soup.prepend_child node anchor_elem;
                  Some { url with anchor = new_anchor }
              | None ->
-                 Logs.warn (fun m ->
+                 Logs.debug (fun m ->
                      m "Could not find anchor node for %s in %s." url.anchor file);
                  None
          in
