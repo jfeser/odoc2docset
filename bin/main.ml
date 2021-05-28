@@ -67,7 +67,7 @@ let insert db name typ path =
        '%s');"
       name typ path
   in
-  ignore (Sqlite3.exec db query)
+  Sqlite3.Rc.check @@ Sqlite3.exec db query
 
 let tar =
   (* Prefer GNU tar to BSD tar. *)
@@ -134,13 +134,13 @@ let id_to_string id =
     | `Constructor (p, x) -> (
         match p with
         | `Type (p, _) -> i2s (p :> t) ^ "." ^ ConstructorName.to_string x
-        | `CoreType _ -> ConstructorName.to_string x )
+        | `CoreType _ -> ConstructorName.to_string x)
     | `Field (p, x) -> (
         match p with
         | `Root _ | `Module _ | `ModuleType _ | `Type _ | `CoreType _ | `Parameter _
         | `Result _ ->
             i2s (p :> t) ^ "." ^ FieldName.to_string x
-        | `Class _ | `ClassType _ -> i2s (p :> t) ^ "#" ^ FieldName.to_string x )
+        | `Class _ | `ClassType _ -> i2s (p :> t) ^ "#" ^ FieldName.to_string x)
     | `Label _ -> raise Not_printable
   in
   try Some (i2s id) with Not_printable -> None
@@ -341,8 +341,8 @@ let tarix_to_sqlite tarix_fn sqlite_fn =
   in
   Sql.(exec db "BEGIN TRANSACTION;" |> Rc.ok_exn);
   In_channel.with_file tarix_fn ~f:(fun ch ->
-      In_channel.fold_lines ch ~init:0 ~f:(fun lnum line ->
-          ( if lnum > 0 then
+      (In_channel.fold_lines ch ~init:0 ~f:(fun lnum line ->
+           (if lnum > 0 then
             match String.split line ~on:' ' with
             | [ kind; off1; off2; len; fn ] ->
                 if String.(kind = "0") then (
@@ -352,9 +352,10 @@ let tarix_to_sqlite tarix_fn sqlite_fn =
                       (TEXT (String.concat ~sep:" " [ off1; off2; len ]))
                     |> Rc.ok_exn;
                     step insert_stmt |> Rc.done_exn;
-                    reset insert_stmt |> Rc.ok_exn) )
-            | _ -> Logs.warn (fun m -> m "Unexpected line in tarix file: %s" line) );
-          lnum + 1)
+                    reset insert_stmt |> Rc.ok_exn))
+            | _ -> Logs.warn (fun m -> m "Unexpected line in tarix file: %s" line));
+           lnum + 1)
+        : int)
       |> ignore);
   Sql.(exec db "END TRANSACTION;" |> Rc.ok_exn)
 
@@ -404,7 +405,7 @@ let main () compress theme output_path pkg_names =
               if List.mem all_pkgs n ~equal:String.( = ) then true
               else (
                 Logs.err (fun m -> m "Could not find package %s." n);
-                false ))
+                false))
         in
         if Logs.err_count () > 0 then Caml.exit 1 else names
   in
@@ -440,7 +441,7 @@ let main () compress theme output_path pkg_names =
   if compress then (
     Logs.info (fun m -> m "Compressing docset.");
     compress_docset docset_dir;
-    Logs.info (fun m -> m "Done compressing docset.") )
+    Logs.info (fun m -> m "Done compressing docset."))
 
 let setup_log style_renderer level =
   Fmt_tty.setup_std_outputs ?style_renderer ();
@@ -458,7 +459,7 @@ let cmd =
   in
   let theme =
     let doc = "Odig theme to use." in
-    Arg.(value & opt string "default" & info [ "t"; "theme" ] ~doc)
+    Arg.(value & opt string "light" & info [ "t"; "theme" ] ~doc)
   in
   let docset_dir =
     let doc =

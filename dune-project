@@ -27,7 +27,7 @@
    (>= 0.6))
   (core
    (>= v0.14))
-  (ppx_let
+  (ppx_jane
    (>= v0.12))
   (sqlite3
    (>= 4.4))

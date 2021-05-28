@@ -29,9 +29,7 @@ and signature (x : Signature.t) =
     | TypeSubstitution _ ->
         Logs.warn (fun m -> m "Ignoring type substitution");
         []
-    | TypExt _ ->
-        Logs.warn (fun m -> m "Ignoring type extension");
-        []
+    | TypExt x -> extension x
     | Open _ | Comment _ -> [])
 
 and include_ (x : Include.t) = signature x.expansion.content
@@ -40,13 +38,13 @@ and module_ (x : Module.t) =
   let ids =
     match x.type_ with
     | ModuleType x -> module_type_expr x
-    | Alias (_, Some exp) -> simple_expansion exp.a_expansion
+    | Alias (_, Some exp) -> simple_expansion exp
     | Alias (_, None) -> []
   in
   any x.id :: ids
 
 and simple_expansion = function
-  | Signature x -> signature x
+  | ModuleType.Signature x -> signature x
   | Functor (_, x) -> simple_expansion x
 
 and module_type (x : ModuleType.t) =
@@ -87,3 +85,5 @@ and class_signature (x : ClassSignature.t) =
     | Method x -> Some (any x.id)
     | InstanceVariable x -> Some (any x.id)
     | _ -> None)
+
+and extension (x : Extension.t) = List.map x.constructors ~f:(fun c -> any c.id)

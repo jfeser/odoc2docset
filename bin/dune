@@ -2,8 +2,8 @@
  (name main)
  (public_name odoc2docset)
  (libraries sqlite3 odoc.odoc odoc.model lambdasoup logs logs.fmt
-            logs.cli fmt.cli fmt.tty core cmdliner shell dune-site)
- (preprocess (pps ppx_let)))
+            logs.cli fmt.cli fmt.tty core cmdliner shell)
+ (preprocess (pps ppx_jane)))
 
 ;(generate_sites_module
 ; (module mysites)
