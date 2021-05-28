@@ -22,15 +22,13 @@
   (dune
    (and
     :build
-    (>= 1.10)))
+    (>= 1.11)))
   (logs
    (>= 0.6))
   (core
    (>= v0.14))
   (ppx_let
    (>= v0.12))
-  (odoc
-   (>= 2))
   (sqlite3
    (>= 4.4))
   (lambdasoup
