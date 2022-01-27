@@ -18,11 +18,14 @@ and signature (x : Signature.t) =
     | Type (_, x) -> type_decl x
     | Exception x -> exception_ x
     | Value x -> value x
-    | External x -> external_ x
     | Class (_, x) -> class_ x
     | ClassType (_, x) -> class_type x
     | Include x -> include_ x
     | ModuleSubstitution x ->
+        Logs.warn (fun m ->
+            m "Ignoring module substitution: %s" @@ Paths.Identifier.name x.id);
+        []
+    | ModuleTypeSubstitution x ->
         Logs.warn (fun m ->
             m "Ignoring module substitution: %s" @@ Paths.Identifier.name x.id);
         []
@@ -32,7 +35,16 @@ and signature (x : Signature.t) =
     | TypExt x -> extension x
     | Open _ | Comment _ -> [])
 
-and include_ (x : Include.t) = signature x.expansion.content
+and include_ (x : Include.t) =
+  let status =
+    match x.status with
+    | `Closed -> "closed"
+    | `Open -> "open"
+    | `Inline -> "inline"
+    | `Default -> "default"
+  in
+  Logs.info (fun m -> m "Include %s %s" (Paths.Identifier.name x.parent) status);
+  signature x.expansion.content
 
 and module_ (x : Module.t) =
   let ids =
@@ -48,13 +60,23 @@ and simple_expansion = function
   | Functor (_, x) -> simple_expansion x
 
 and module_type (x : ModuleType.t) =
-  let ids = match x.expr with Some (Signature s) -> signature s | _ -> [] in
+  let ids = Option.map x.expr ~f:module_type_expr |> Option.value ~default:[] in
   any x.id :: ids
 
 and module_type_expr = function
   | Signature x -> signature x
   | Functor (_, x) -> module_type_expr x
-  | _ -> []
+  | With { w_expansion = Some exp; _ } -> simple_expansion exp
+  | With { w_expansion = None; _ } ->
+      Logs.warn (fun m -> m "Ignoring module type expr unexpanded with");
+      []
+  | Path { p_expansion = Some exp; _ } -> simple_expansion exp
+  | Path { p_expansion = None; _ } ->
+      Logs.warn (fun m -> m "Ignoring module type expr unexpanded path");
+      []
+  | TypeOf _ ->
+      Logs.warn (fun m -> m "Ignoring module type expr typeof");
+      []
 
 and type_decl (x : TypeDecl.t) =
   let ids =
@@ -67,10 +89,7 @@ and type_decl (x : TypeDecl.t) =
   any x.id :: ids
 
 and exception_ (x : Exception.t) = [ any x.id ]
-
 and value (x : Value.t) = [ any x.id ]
-
-and external_ (x : External.t) = [ any x.id ]
 
 and class_ (x : Class.t) =
   let ids = match x.expansion with Some cs -> class_signature cs | None -> [] in

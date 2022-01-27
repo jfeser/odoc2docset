@@ -28,11 +28,8 @@ let opam_prefix = Sys.getenv_exn "OPAM_SWITCH_PREFIX"
 
 module Odig = struct
   let htmldir pkg = opam_prefix / "var/cache/odig/html" / pkg
-
   let cachedir = opam_prefix / "var/cache/odig/odoc"
-
   let all_pkgs () = run_lines "odig" [ "pkg"; "--short" ]
-
   let theme_prefix = opam_prefix / "share/odig/odoc-theme"
 end
 
@@ -104,7 +101,7 @@ let id_to_string id =
   let open Names in
   let exception Not_printable in
   let rec i2s : Paths.Identifier.t -> _ = function
-    | `Root _ | `Page _ | `RootPage _ | `LeafPage _ | `Parameter _ | `Result _ -> ""
+    | `Root _ | `Page _ | `LeafPage _ | `Parameter _ | `Result _ -> ""
     | `CoreType x ->
         if TypeName.is_hidden x then raise Not_printable else TypeName.to_string x
     | `CoreException x -> ExceptionName.to_string x
@@ -156,7 +153,7 @@ let id_kind (id : Odoc_model.Paths.Identifier.t) =
   | `Label _ -> "Parameter"
   | `Exception _ | `CoreException _ -> "Exception"
   | `Class _ -> "Class"
-  | `RootPage _ | `Page _ | `LeafPage _ -> "Section"
+  | `Page _ | `LeafPage _ -> "Section"
   | `ClassType _ -> "Class"
   | `Value _ -> "Value"
   | `Constructor _ -> "Constructor"
@@ -218,7 +215,8 @@ let update_index db docu_dir ids =
              let name_ = Model.Paths.Identifier.name id in
              let new_anchor = sprintf "//apple_ref/cpp/%s/%s" type_ name_ in
              let anchor_elem =
-               Soup.create_element ~attributes:[ ("name", new_anchor) ]
+               Soup.create_element
+                 ~attributes:[ ("name", new_anchor) ]
                  ~class_:"dashAnchor" "a"
              in
              match Soup.select_one (sprintf {|a[href="#%s"]|} url.anchor) soup with
@@ -269,49 +267,43 @@ let create_db db_file =
   |> Sqlite3.Rc.ok_exn;
   db
 
-(** Load a compilation unit, resolve and expand it. Taken straight from
-   odoc/src/html_page.ml. *)
-let load_unit env path =
-  let open Result.Let_syntax in
-  let open Odoc in
-  let%bind unit = Compilation_unit.load (Fs.File.of_string path) in
-  let env = Env.build env (`Unit unit) in
-  Odoc_xref2.Link.link env unit
-  |> Odoc_xref2.Lookup_failures.handle_failures ~warn_error:true ~filename:path
-
-let load env input =
+let load ~resolver input =
   let open Odoc in
   let open Or_error in
-  Root.read input >>= fun root ->
-  let input_s = Fs.File.to_string input in
-  match root.file with
-  | Page _ -> Ok None
-  | Compilation_unit { hidden; _ } ->
-      if hidden then Ok None
+  let filename = Fs.File.to_string @@ Fs.File.basename input in
+  Odoc_file.load input >>= fun file ->
+  match file.content with
+  | Odoc_file.Page_content page ->
+      Logs.debug (fun m ->
+          m "Ignoring documentation page: %s"
+            (Model.Comment.Identifier.name page.name));
+      Ok None
+  | Unit_content unit ->
+      if Odoc_model.Root.Odoc_file.hidden unit.root.file then (
+        Logs.debug (fun m ->
+            m "Ignoring hidden unit: %s" (Model.Paths.Identifier.name unit.id));
+        Ok None)
       else
-        Compilation_unit.load input >>= fun unit ->
-        let env = Env.build env (`Unit unit) in
-        let linked = Odoc_xref2.Link.link env unit in
-        linked
-        |> Odoc_xref2.Lookup_failures.handle_failures ~warn_error:false
-             ~filename:input_s
-        >>= fun odoctree ->
+        let env = Resolver.build_env_for_unit ~linking:true resolver unit in
+        let linked = Odoc_xref2.Link.link ~filename env unit in
+        Model.Error.handle_warnings
+          ~warnings_options:{ warn_error = false; print_warnings = true }
+          linked
+        >>= fun unit ->
         Odoc_xref2.Tools.reset_caches ();
-        Caml.Hashtbl.clear Compilation_unit.units_cache;
-        Ok (Some odoctree)
+        Ok (Some unit)
 
 let odoc_files_exn d = run_lines "find" [ d; "-type"; "f"; "-name"; "*.odoc" ]
-
 let all_subdirs d = run_lines_warn "find" [ d; "-type"; "d" ]
 
 let populate_db include_dirs pkgs db docu_dir =
   List.iter include_dirs ~f:(fun d ->
       Logs.debug (fun m -> m "Include dir: %s" (Odoc.Fs.Directory.to_string d)));
-
-  let env =
-    Odoc.Env.create ~important_digests:true ~directories:include_dirs
+  let resolver =
+    Odoc.Resolver.create ~important_digests:true ~directories:include_dirs
       ~open_modules:[]
   in
+
   List.iter pkgs ~f:(fun pkg ->
       Logs.info (fun m -> m "Indexing %s." pkg);
 
@@ -321,7 +313,7 @@ let populate_db include_dirs pkgs db docu_dir =
         (odoc_files_exn (Odig.cachedir / pkg))
         ~f:(fun f ->
           Logs.debug (fun m -> m "Loading %s." f);
-          match load env @@ Odoc.Fs.File.of_string f with
+          match load ~resolver @@ Odoc.Fs.File.of_string f with
           | Ok (Some unit) ->
               let ids = ids_of_unit unit in
               update_index db docu_dir ids
