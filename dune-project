@@ -20,15 +20,9 @@
    "Generates Dash docsets for OCaml packages using the Odoc documentation generator.")
  (depends
   (dune
-   (and
-    :build
-    (>= 1.11)))
+   (>= 2))
   (logs
    (>= 0.6))
-  (core
-   (>= v0.14))
-  (ppx_jane
-   (>= v0.12))
   (sqlite3
    (>= 4.4))
   (lambdasoup
@@ -38,9 +32,13 @@
   (fmt
    (>= 0.8))
   (shell
-   (>= v0.14))))
-
-(using menhir 2.0)
+   (>= v0.14))
+  (stdio
+   (>= v0.14))
+  (odoc
+   (>= 2.0.2))
+  (odig
+   (>= 0.0.7))))
 
 (generate_opam_files true)
 

@@ -10,15 +10,16 @@ homepage: "https://github.com/jfeser/odoc2docset"
 doc: "https://jfeser.github.io/odoc2docset/"
 bug-reports: "https://github.com/jfeser/odoc2docset/issues"
 depends: [
-  "dune" {build & >= "1.11"}
+  "dune" {>= "2"}
   "logs" {>= "0.6"}
-  "core" {>= "v0.14"}
-  "ppx_jane" {>= "v0.12"}
   "sqlite3" {>= "4.4"}
   "lambdasoup" {>= "0.6"}
   "cmdliner" {>= "1.0"}
   "fmt" {>= "0.8"}
   "shell" {>= "v0.14"}
+  "stdio" {>= "v0.14"}
+  "odoc" {>= "2.0.2"}
+  "odig" {>= "0.0.7"}
 ]
 build: [
   ["dune" "subst"] {pinned}
