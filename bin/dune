@@ -1,11 +1,5 @@
 (executable
  (name main)
  (public_name odoc2docset)
- (libraries sqlite3 odoc.odoc odoc.model lambdasoup logs logs.fmt logs.cli
-   fmt.cli fmt.tty core cmdliner shell)
- (preprocess
-  (pps ppx_jane)))
-
-;(generate_sites_module
-; (module mysites)
-; (sites odoc2docset))
+ (libraries stdio sqlite3 odoc.odoc odoc.model lambdasoup logs logs.fmt logs.cli
+   fmt.cli fmt.tty cmdliner shell str))

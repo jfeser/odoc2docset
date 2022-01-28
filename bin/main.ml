@@ -1,4 +1,5 @@
-open Core
+open Stdio
+open Printf
 open Shell
 open Cmdliner
 module Odoc = Odoc_odoc
@@ -24,7 +25,7 @@ let ok_exn = function
       Logs.err (fun m -> m "%s" e);
       Caml.exit 1
 
-let opam_prefix = Sys.getenv_exn "OPAM_SWITCH_PREFIX"
+let opam_prefix = Sys.getenv "OPAM_SWITCH_PREFIX"
 
 module Odig = struct
   let htmldir pkg = opam_prefix / "var/cache/odig/html" / pkg
@@ -55,6 +56,9 @@ module Sqlite3 = struct
   end
 
   include (Sqlite3 : module type of Sqlite3 with module Rc := Rc)
+
+  let exec_exn db query = exec db query |> Rc.ok_exn
+  let bind_exn stmt pos data = bind stmt pos data |> Rc.ok_exn
 end
 
 let insert db name typ path =
@@ -161,11 +165,18 @@ let id_kind (id : Odoc_model.Paths.Identifier.t) =
   | `Root _ -> "Package"
 
 let is_hidden id =
-  Option.map (id_to_string id) ~f:(String.is_substring ~substring:"__")
-  |> Option.value ~default:true
+  id_to_string id
+  |> Option.map (fun s -> Str.(string_match (regexp ".*__.*")) s 0)
+  |> Option.value ~default:false
 
 (** Collect the identifiers (labeled with Dash types) in a compilation unit. *)
 let ids_of_unit = Ids.compilation_unit
+
+module String_tbl = Hashtbl.Make (struct
+  include String
+
+  let hash = Hashtbl.hash
+end)
 
 let update_index db docu_dir ids =
   let open Sqlite3 in
@@ -173,16 +184,17 @@ let update_index db docu_dir ids =
     prepare db "INSERT OR IGNORE INTO searchIndex(name, type, path) VALUES (?,?,?);"
   in
   exec db "BEGIN TRANSACTION;" |> Rc.ok_exn;
-  let soups = Hashtbl.Poly.create () in
+  let soups = String_tbl.create 8 in
   (* Filter out the ids that don't have a string representation. *)
-  List.filter_map ids ~f:(fun id ->
-      match id_to_string id with
-      | Some id_str -> Some (id, id_kind id, id_str)
-      | None -> None)
+  ids
+  |> List.filter_map (fun id ->
+         match id_to_string id with
+         | Some id_str -> Some (id, id_kind id, id_str)
+         | None -> None)
   (* Filter out hidden ids. *)
-  |> List.filter ~f:(fun (id, _, _) -> not (is_hidden id))
+  |> List.filter (fun (id, _, _) -> not (is_hidden id))
   (* Filter out the ids that don't have a URL. *)
-  |> List.filter_map ~f:(fun (id, type_, id_str) ->
+  |> List.filter_map (fun (id, type_, id_str) ->
          match Url.from_identifier ~stop_before:false id with
          | Ok url -> Some (id, type_, id_str, url)
          | Error e ->
@@ -190,27 +202,30 @@ let update_index db docu_dir ids =
                  m "Failed to get URL for id '%s': %s" id_str (Url.Error.to_string e));
              None)
   (* Filter out the ids that don't have a corresponding documentation file. *)
-  |> List.filter_map ~f:(fun (id, type_, id_str, url) ->
+  |> List.filter_map (fun (id, type_, id_str, url) ->
          let file =
            let html_path =
              Odoc_html.Link.href ~resolve:(Base "") { url with anchor = "" }
            in
            sprintf "%s/%s" docu_dir html_path
          in
-         match Sys.file_exists file with
-         | `Yes -> Some (id, type_, id_str, url, file)
-         | `No | `Unknown ->
-             Logs.debug (fun m -> m "Documentation file %s does not exist." file);
-             None)
+         if Sys.file_exists file then Some (id, type_, id_str, url, file)
+         else (
+           Logs.debug (fun m -> m "Documentation file %s does not exist." file);
+           None))
   (* Filter out the ids that have an anchor that does not exist in the
      documentation file. *)
-  |> List.filter_map ~f:(fun (id, type_, id_str, url, file) ->
+  |> List.filter_map (fun (id, type_, id_str, url, file) ->
          let url =
-           if String.(url.Url.Anchor.anchor = "") then Some url
+           if url.Url.Anchor.anchor = "" then Some url
            else
              let soup =
-               Hashtbl.find_or_add soups file ~default:(fun () ->
-                   In_channel.read_all file |> Soup.parse)
+               match String_tbl.find_opt soups file with
+               | Some s -> s
+               | None ->
+                   let s = Soup.parse @@ Soup.read_file file in
+                   String_tbl.add soups file s;
+                   s
              in
              let name_ = Model.Paths.Identifier.name id in
              let new_anchor = sprintf "//apple_ref/cpp/%s/%s" type_ name_ in
@@ -228,9 +243,9 @@ let update_index db docu_dir ids =
                      m "Could not find anchor node for %s in %s." url.anchor file);
                  None
          in
-         Option.map url ~f:(fun url -> (type_, id_str, url)))
+         Option.map (fun url -> (type_, id_str, url)) url)
   (* Insert ids into the database. *)
-  |> List.iter ~f:(fun (type_, id_str, url) ->
+  |> List.iter (fun (type_, id_str, url) ->
          let url_str = Odoc_html.Link.href ~resolve:(Base "") url in
          Logs.debug (fun m -> m "Inserting %s %s %s" id_str type_ url_str);
          let open Data in
@@ -240,8 +255,9 @@ let update_index db docu_dir ids =
          step stmt |> Rc.done_exn;
          reset stmt |> Rc.ok_exn);
   exec db "END TRANSACTION;" |> Rc.ok_exn;
-  Hashtbl.iteri soups ~f:(fun ~key:file ~data:soup ->
-      Out_channel.write_all file ~data:(Soup.to_string soup))
+  String_tbl.iter
+    (fun file soup -> Soup.write_file file @@ Soup.to_string soup)
+    soups
 
 let create_template docset_dir =
   let open Filename in
@@ -251,9 +267,7 @@ let create_template docset_dir =
   let db_file = resource_dir / "docSet.dsidx" in
   run "rm" [ "-rf"; docset_dir ];
   mkdir ~p:() documents_dir;
-  Out_channel.write_all
-    (docset_dir / "Contents" / "Info.plist")
-    ~data:(plist docset_name);
+  Soup.write_file (docset_dir / "Contents" / "Info.plist") (plist docset_name);
   run_warn "cp" [ etc / "icon.png"; docset_dir / "icon.png" ];
   (docset_dir, documents_dir, db_file)
 
@@ -297,59 +311,63 @@ let odoc_files_exn d = run_lines "find" [ d; "-type"; "f"; "-name"; "*.odoc" ]
 let all_subdirs d = run_lines_warn "find" [ d; "-type"; "d" ]
 
 let populate_db include_dirs pkgs db docu_dir =
-  List.iter include_dirs ~f:(fun d ->
-      Logs.debug (fun m -> m "Include dir: %s" (Odoc.Fs.Directory.to_string d)));
+  List.iter
+    (fun d ->
+      Logs.debug (fun m -> m "Include dir: %s" (Odoc.Fs.Directory.to_string d)))
+    include_dirs;
+
   let resolver =
     Odoc.Resolver.create ~important_digests:true ~directories:include_dirs
       ~open_modules:[]
   in
 
-  List.iter pkgs ~f:(fun pkg ->
+  List.iter
+    (fun pkg ->
       Logs.info (fun m -> m "Indexing %s." pkg);
 
       insert db pkg "Package" (sprintf "%s/index.html" pkg);
 
       List.iter
-        (odoc_files_exn (Odig.cachedir / pkg))
-        ~f:(fun f ->
+        (fun f ->
           Logs.debug (fun m -> m "Loading %s." f);
           match load ~resolver @@ Odoc.Fs.File.of_string f with
           | Ok (Some unit) ->
               let ids = ids_of_unit unit in
               update_index db docu_dir ids
           | Ok None -> ()
-          | Error (`Msg msg) -> Logs.err (fun m -> m "Resolve error: %s" msg)))
+          | Error (`Msg msg) -> Logs.err (fun m -> m "Resolve error: %s" msg))
+        (odoc_files_exn (Odig.cachedir / pkg)))
+    pkgs
 
 let tarix_to_sqlite tarix_fn sqlite_fn =
-  let module Sql = Sqlite3 in
+  let open Sqlite3 in
   (* Create new sqlite db. *)
-  let db = Sql.db_open sqlite_fn in
-  Sql.exec db
+  let db = db_open sqlite_fn in
+  exec_exn db
     "CREATE TABLE tarindex(path TEXT PRIMARY KEY COLLATE NOCASE, hash TEXT);\n\
-     CREATE TABLE toextract(path TEXT PRIMARY KEY COLLATE NOCASE, hash TEXT);\n"
-  |> Sql.Rc.ok_exn;
+     CREATE TABLE toextract(path TEXT PRIMARY KEY COLLATE NOCASE, hash TEXT);\n";
   let insert_stmt =
-    Sql.prepare db "INSERT OR IGNORE INTO tarindex(path, hash) VALUES (?,?);"
+    prepare db "INSERT OR IGNORE INTO tarindex(path, hash) VALUES (?,?);"
   in
-  Sql.(exec db "BEGIN TRANSACTION;" |> Rc.ok_exn);
+  exec_exn db "BEGIN TRANSACTION;";
+
   In_channel.with_file tarix_fn ~f:(fun ch ->
       (In_channel.fold_lines ch ~init:0 ~f:(fun lnum line ->
            (if lnum > 0 then
-            match String.split line ~on:' ' with
+            match Str.(split (regexp_string " ") line) with
             | [ kind; off1; off2; len; fn ] ->
-                if String.(kind = "0") then (
-                  Sql.(
-                    bind insert_stmt 1 (TEXT fn) |> Rc.ok_exn;
-                    bind insert_stmt 2
-                      (TEXT (String.concat ~sep:" " [ off1; off2; len ]))
-                    |> Rc.ok_exn;
-                    step insert_stmt |> Rc.done_exn;
-                    reset insert_stmt |> Rc.ok_exn))
+                if kind = "0" then (
+                  bind_exn insert_stmt 1 (TEXT fn);
+                  bind_exn insert_stmt 2
+                    (TEXT (String.concat " " [ off1; off2; len ]));
+                  step insert_stmt |> Rc.done_exn;
+                  reset insert_stmt |> Rc.ok_exn)
             | _ -> Logs.warn (fun m -> m "Unexpected line in tarix file: %s" line));
            lnum + 1)
         : int)
       |> ignore);
-  Sql.(exec db "END TRANSACTION;" |> Rc.ok_exn)
+
+  exec_exn db "END TRANSACTION;"
 
 let compress_docset docset_dir =
   let temp_tgz = Caml.Filename.temp_file "tarix" ".tgz"
@@ -359,7 +377,6 @@ let compress_docset docset_dir =
   (* Copy out the docset index. *)
   cp db_file temp_db;
   (* Convert the tarix index to a sqlite index. *)
-  let docset_base, docset_rel = Filename.split docset_dir in
   let tarix_args = sprintf "-z -9 -f %s" temp_idx in
   run
     ~env:(`Extend [ ("TARIX", tarix_args) ])
@@ -370,8 +387,8 @@ let compress_docset docset_dir =
       "--use-compress-program";
       "tarix";
       "-C";
-      docset_base;
-      docset_rel;
+      Filename.dirname docset_dir;
+      Filename.basename docset_dir;
     ];
   (* Create a new docset template. *)
   rm ~r:() ~f:() docset_dir;
@@ -393,11 +410,13 @@ let main () compress theme output_path pkg_names =
     | [] -> all_pkgs
     | names ->
         let names =
-          List.filter names ~f:(fun n ->
-              if List.mem all_pkgs n ~equal:String.( = ) then true
-              else (
+          List.filter
+            (fun n ->
+              let in_pkgs = List.mem n all_pkgs in
+              if not in_pkgs then
                 Logs.err (fun m -> m "Could not find package %s." n);
-                false))
+              in_pkgs)
+            names
         in
         if Logs.err_count () > 0 then Caml.exit 1 else names
   in
@@ -412,9 +431,11 @@ let main () compress theme output_path pkg_names =
 
   (* Copy documentation. *)
   Logs.info (fun m -> m "Copying documentation.");
-  List.iter pkgs ~f:(fun pkg ->
+  List.iter
+    (fun pkg ->
       Logs.debug (fun m -> m "Copying %s." pkg);
-      run "cp" [ "-r"; Odig.htmldir pkg; docu_dir ]);
+      run "cp" [ "-r"; Odig.htmldir pkg; docu_dir ])
+    pkgs;
 
   (* Copy theme CSS & JS. *)
   run "cp"
@@ -426,7 +447,7 @@ let main () compress theme output_path pkg_names =
   Logs.info (fun m -> m "Creating index.");
   let db = create_db db_file in
   let include_dirs =
-    all_subdirs Odig.cachedir |> List.map ~f:Odoc.Fs.Directory.of_string
+    List.map Odoc.Fs.Directory.of_string (all_subdirs Odig.cachedir)
   in
   populate_db include_dirs pkgs db docu_dir;
   Logs.info (fun m -> m "Done creating index.");
