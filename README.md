@@ -1,5 +1,4 @@
-# odoc2docset [![Build Status](https://travis-ci.org/jfeser/odoc2docset.png?branch=master)](https://travis-ci.org/jfeser/odoc2docset)
-
+# odoc2docset
 
 Converts [Odoc](https://github.com/ocaml-doc/odoc) generated documentation into
 [Dash](https://kapeli.com/dash) (or [Zeal](https://zealdocs.org/)) docsets.
