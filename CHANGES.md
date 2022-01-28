@@ -1,3 +1,7 @@
+## 1.4 (2022-01-28)
+
+ - Update to work with `odoc` 2.02.
+
 ## 1.3.1 (2020-04-13)
 
  - Add missing dependencies.
