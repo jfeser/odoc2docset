@@ -400,7 +400,14 @@ let compress_docset docset_dir =
   cp temp_tgz (docset_dir / "Contents/Resources/tarix.tgz");
   cp temp_db (docset_dir / "Contents/Resources/docSet.dsidx")
 
+let check_for_tarix () =
+  if Option.is_none @@ which "tarix" then (
+    Logs.err (fun m -> m "Could not find tarix. Compression is not available.");
+    exit 1)
+
 let main () compress theme output_path pkg_names =
+  if compress then check_for_tarix ();
+
   (* Get Odig configuration. *)
   let all_pkgs = Odig.all_pkgs () in
 
